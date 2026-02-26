@@ -74,10 +74,19 @@ def resolve_and_cache_universe(args, *, ctx: Optional[RunContext] = None) -> Lis
                 save_universe_snapshot(universe_name, symbols)
             else:
                 symbols = load_latest_universe(universe_name)
+
                 if symbols is None:
-                    raise RuntimeError(
-                        f"Universe '{universe_name}' not cached. Run with --update-universe."
-                    )
+                    if ctx:
+                        ctx.event(
+                            "universe_cache_miss_auto_update",
+                            level="WARNING",
+                            stage="universe_resolve",
+                            universe=universe_name,
+                        )
+
+                    single_args = _build_single_universe_args(args, universe_name)
+                    symbols = resolve_universe(single_args, ctx=ctx)
+                    save_universe_snapshot(universe_name, symbols)
 
             if ctx:
                 ctx.event(
