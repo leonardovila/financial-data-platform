@@ -1,0 +1,21 @@
+[project]
+name = "financial_data_etl"
+version = "1.0.0"
+dependencies = [
+    "websockets>=10.4,<11",
+    "requests>=2.32,<3",
+    "exchange-calendars>=4.13",
+]
+description = "End-to-end incremental data pipeline for US financial market data"
+requires-python = ">=3.10"
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["financial_data_etl*"]
+
+[tool.setuptools.package-data]
+"financial_data_etl.universe.storage" = ["catalog.json"]

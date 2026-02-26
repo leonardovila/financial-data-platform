@@ -1,0 +1,26 @@
+# Virtual environment
+.venv/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Build / packaging artifacts
+financial_data_etl.egg-info/
+build/
+dist/
+
+# Local runtime artifacts
+logs/
+ws_traces/
+
+# Local databases
+*.db
+*.sqlite
+*.sqlite3
+
+# OS noise
+.DS_Store
+Thumbs.db
