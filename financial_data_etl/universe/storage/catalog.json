@@ -1,10 +1,4 @@
 {
-  "BTC": {
-    "provider_symbol": {
-      "tradingview": "BINANCE:BTCUSDT"
-    },
-    "ticker": "BTC"
-  },
   "NVDA": {
     "provider_symbol": {
       "tradingview": "NASDAQ:NVDA"

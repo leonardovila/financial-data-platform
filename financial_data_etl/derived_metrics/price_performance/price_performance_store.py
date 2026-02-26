@@ -5,7 +5,7 @@ import sqlite3
 import time
 from typing import Any, Dict, List, Optional
 
-from financial-data-etl.storage.paths import DB_PATH
+from financial_data_etl.storage.paths import DB_PATH
 
 def _get_connection() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH)
