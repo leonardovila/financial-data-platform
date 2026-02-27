@@ -42,6 +42,13 @@ def build_cli_parser() -> argparse.ArgumentParser:
         help="Universe: explicit assets list. Example: --assets AAPL MSFT BTCUSDT",
     )
 
+    # Sincronizar con db en servidor (solo util con credenciales)
+    parser.add_argument(
+        "--sync",
+        action="store_true",
+        help="Sync local DB snapshot to remote server (requires private_config).",
+    )
+
     return parser
 
 def parse_cli(argv: Optional[List[str]] = None) -> argparse.Namespace:
@@ -149,8 +156,9 @@ def main(argv: Optional[List[str]] = None) -> int:
                 with ctx.span("derived_volume_1d", symbols=len(derived_symbols)):
                     run_volume_1d(derived_symbols, ctx=ctx)
 
-        # run_sync_db_to_server(DB_PATH)
-        # TEST api-dev
+        if args.sync:
+            with ctx.span("db_sync"):
+                run_sync_db_to_server(DB_PATH, ctx)
 
         return 0
 
