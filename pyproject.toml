@@ -5,6 +5,8 @@ dependencies = [
     "websockets>=10.4,<11",
     "requests>=2.32,<3",
     "exchange-calendars>=4.13",
+    "fastapi>=0.110,<1",
+    "uvicorn[standard]>=0.29,<1",
 ]
 description = "End-to-end incremental data pipeline for US financial market data"
 requires-python = ">=3.10"
