@@ -1,12 +1,15 @@
 from pathlib import Path
 import json
+import os
 
 # Repo root (financial-data-etl)
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 DATA_DIR = REPO_ROOT  # directamente el root
 
-DB_PATH = DATA_DIR / "financial_data_etl.db"
+DB_PATH = Path(
+    os.getenv("FORGE_DB_PATH", DATA_DIR / "financial_data_etl.db")
+)
 CATALOG_PATH = DATA_DIR / "catalog.json"
 
 LOGS_DIR = DATA_DIR / "logs"
