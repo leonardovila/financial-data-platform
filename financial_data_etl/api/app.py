@@ -211,7 +211,6 @@ def get_latest_volume_1d(symbol: str):
             "vol_gap_50": row["vol_gap_50"],
             "vol_gap_100": row["vol_gap_100"],
             "vol_gap_200": row["vol_gap_200"],
-            "computed_at": row["computed_at"],
         }
 
     finally:
