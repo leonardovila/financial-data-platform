@@ -10,6 +10,7 @@ def _ensure_table_exists(conn: sqlite3.Connection) -> None:
         CREATE TABLE IF NOT EXISTS fundamentals_snapshot (
             symbol TEXT NOT NULL,
             as_of_ts TEXT NOT NULL,
+            company_name TEXT,
             market_cap REAL,
             pe_ttm REAL,
             eps_ttm REAL,
@@ -46,17 +47,19 @@ def persist_fundamentals_snapshot(
                 INSERT OR REPLACE INTO fundamentals_snapshot (
                     symbol,
                     as_of_ts,
+                    company_name,
                     market_cap,
                     pe_ttm,
                     eps_ttm,
                     shares_outstanding,
                     sector,
                     industry
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
                 """,
                 (
                     symbol,
                     as_of_ts,
+                    payload.get("company_name"),   # ← NUEVO
                     fundamentals.get("market_cap"),
                     fundamentals.get("pe_ttm"),
                     fundamentals.get("eps_ttm"),

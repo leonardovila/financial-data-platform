@@ -137,6 +137,7 @@ async def request_historic_ohlcv(websocket, chartSession, num_candles, symbol, t
 
     # 2) loop de recepción hasta encontrar timescale_update
     data = None
+    company_name: Optional[str] = None  
     try:
         while True:
             message = await websocket.recv()
@@ -151,11 +152,21 @@ async def request_historic_ohlcv(websocket, chartSession, num_candles, symbol, t
                     payload = json.loads(chunk)
                 except json.JSONDecodeError:
                         continue
+                
+                if payload.get("m") == "symbol_resolved":
+                    p = payload.get("p")
+                    if isinstance(p, list) and len(p) >= 3:
+                        meta = p[2]
+                        if isinstance(meta, dict):
+                            company_name = meta.get("local_description") or meta.get("description")
 
                 if payload.get("m") == "timescale_update":
                     if trace_file:
                         trace_file.write("TIMESCALE_UPDATE DETECTED\n\n")
-                    return payload
+                    return {
+                        "timescale_update": payload,
+                        "company_name": company_name,
+                    }
     except websockets.ConnectionClosed as e:
         raise
 
@@ -242,7 +253,8 @@ async def request_ohlcv_and_fundamentals(
         trace_file=session.get("trace_file"),
     )
 
-    candles = parse_ohlcv(data)
+    candles = parse_ohlcv(data["timescale_update"])
+    company_name = data.get("company_name")
 
     # 2️⃣ FUNDAMENTALS (MISMA SESIÓN)
     fundamentals = await request_quote_snapshot(
@@ -255,4 +267,5 @@ async def request_ohlcv_and_fundamentals(
         "timeframe": timeframe,
         "candles": candles,
         "fundamentals_raw": fundamentals.get("raw"),
+        "company_name": company_name,
     }
