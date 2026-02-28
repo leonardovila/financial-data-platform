@@ -67,3 +67,38 @@ def get_ohlcv_history(symbol: str, limit: int = 4500):
 
     finally:
         conn.close()
+
+@app.get("/fundamentals/{symbol}")
+def get_latest_fundamentals(symbol: str):
+    conn = get_connection()
+    try:
+        # SQLite rows accesibles por nombre
+        conn.row_factory = __import__("sqlite3").Row
+
+        row = conn.execute(
+            """
+            SELECT *
+            FROM fundamentals_snapshot
+            WHERE symbol = ?
+            ORDER BY as_of_ts DESC
+            LIMIT 1
+            """,
+            (symbol.upper(),),
+        ).fetchone()
+
+        if not row:
+            return {"symbol": symbol.upper(), "data": None}
+
+        return {
+            "symbol": row["symbol"],
+            "as_of_ts": row["as_of_ts"],
+            "company_name": row["company_name"],
+            "market_cap": row["market_cap"],
+            "pe_ttm": row["pe_ttm"],
+            "eps_ttm": row["eps_ttm"],
+            "shares_outstanding": row["shares_outstanding"],
+            "sector": row["sector"],
+            "industry": row["industry"],
+        }
+    finally:
+        conn.close()
