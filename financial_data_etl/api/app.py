@@ -102,3 +102,40 @@ def get_latest_fundamentals(symbol: str):
         }
     finally:
         conn.close()
+
+@app.get("/performance/1d/{symbol}")
+def get_latest_performance_1d(symbol: str):
+    conn = get_connection()
+    try:
+        import sqlite3
+        conn.row_factory = sqlite3.Row
+
+        row = conn.execute(
+            """
+            SELECT *
+            FROM performance_1d
+            WHERE symbol = ?
+              AND is_partial = 0
+            ORDER BY ts DESC
+            LIMIT 1
+            """,
+            (symbol.upper(),),
+        ).fetchone()
+
+        if not row:
+            return {"symbol": symbol.upper(), "data": None}
+
+        return {
+            "symbol": row["symbol"],
+            "ts": row["ts"],
+            "ret_1d": row["ret_1d"],
+            "ret_1w": row["ret_1w"],
+            "ret_1m": row["ret_1m"],
+            "ret_3m": row["ret_3m"],
+            "ret_6m": row["ret_6m"],
+            "ret_1y": row["ret_1y"],
+            "computed_at": row["computed_at"],
+        }
+
+    finally:
+        conn.close()
