@@ -139,3 +139,40 @@ def get_latest_performance_1d(symbol: str):
 
     finally:
         conn.close()
+
+@app.get("/volatility/1d/{symbol}")
+def get_latest_volatility_1d(symbol: str):
+    conn = get_connection()
+    try:
+        import sqlite3
+        conn.row_factory = sqlite3.Row
+
+        row = conn.execute(
+            """
+            SELECT *
+            FROM volatility_1d
+            WHERE symbol = ?
+              AND is_partial = 0
+            ORDER BY ts DESC
+            LIMIT 1
+            """,
+            (symbol.upper(),),
+        ).fetchone()
+
+        if not row:
+            return {"symbol": symbol.upper(), "data": None}
+
+        return {
+            "symbol": row["symbol"],
+            "ts": row["ts"],
+            "range_intraday": row["range_intraday"],
+            "vol_1w": row["vol_1w"],
+            "vol_1m": row["vol_1m"],
+            "vol_3m": row["vol_3m"],
+            "vol_6m": row["vol_6m"],
+            "vol_1y": row["vol_1y"],
+            "computed_at": row["computed_at"],
+        }
+
+    finally:
+        conn.close()
