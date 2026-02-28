@@ -92,7 +92,7 @@ def get_latest_fundamentals(symbol: str):
         return {
             "symbol": row["symbol"],
             "as_of_ts": row["as_of_ts"],
-            #"company_name": row["company_name"],
+            "company_name": row["company_name"],
             "market_cap": row["market_cap"],
             "pe_ttm": row["pe_ttm"],
             "eps_ttm": row["eps_ttm"],
