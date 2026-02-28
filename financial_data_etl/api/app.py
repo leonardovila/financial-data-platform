@@ -176,3 +176,43 @@ def get_latest_volatility_1d(symbol: str):
 
     finally:
         conn.close()
+
+@app.get("/volume/1d/{symbol}")
+def get_latest_volume_1d(symbol: str):
+    conn = get_connection()
+    try:
+        import sqlite3
+        conn.row_factory = sqlite3.Row
+
+        row = conn.execute(
+            """
+            SELECT *
+            FROM volume_1d
+            WHERE symbol = ?
+              AND is_partial = 0
+            ORDER BY ts DESC
+            LIMIT 1
+            """,
+            (symbol.upper(),),
+        ).fetchone()
+
+        if not row:
+            return {"symbol": symbol.upper(), "data": None}
+
+        return {
+            "symbol": row["symbol"],
+            "ts": row["ts"],
+            "volume_usd": row["volume_usd"],
+            "vol_sma_20": row["vol_sma_20"],
+            "vol_sma_50": row["vol_sma_50"],
+            "vol_sma_100": row["vol_sma_100"],
+            "vol_sma_200": row["vol_sma_200"],
+            "vol_gap_20": row["vol_gap_20"],
+            "vol_gap_50": row["vol_gap_50"],
+            "vol_gap_100": row["vol_gap_100"],
+            "vol_gap_200": row["vol_gap_200"],
+            "computed_at": row["computed_at"],
+        }
+
+    finally:
+        conn.close()
