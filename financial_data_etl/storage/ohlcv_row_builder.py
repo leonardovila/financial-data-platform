@@ -4,50 +4,22 @@ import time
 import exchange_calendars as xcals
 import pandas as pd
 
-# =====================================================================
-# ======================== ACLARACION FASE 1 ==========================
-# =====================================================================
-# is_partial – Lógica Fase 1 (1D – US Equities)
-#
-# Este módulo marca is_partial únicamente para velas 1D y solo para
-# equities de USA utilizando el calendario oficial XNYS
-# (exchange_calendars).
-#
-# Criterio:
-# - Se toma la última vela del batch (ts == max_ts).
-# - Se obtiene la sesión vigente respecto a la hora actual en NY.
-# - Se obtiene la sesión asociada al timestamp de la vela.
-# - Si ambas sesiones coinciden y la hora actual es anterior al
-#   session_close oficial, la vela se marca como parcial.
-#
-# En términos simples:
-# is_partial = 1 si la vela diaria corresponde a la sesión vigente
-# y el mercado aún no cerró oficialmente.
-#
-# Garantías:
-# - Respeta horario de verano.
-# - Respeta feriados y fines de semana.
-# - No depende del timezone local del host (se convierte a NY).
-#
-# Limitaciones:
-# - Solo válido para timeframe 1D.
-# - Solo válido para equities USA (XNYS).
-# - Depende de que el proveedor entregue como última vela
-#   la vela de la sesión vigente.
-# - Depende de que el reloj del sistema sea correcto.
-#
-# Si se amplía a otros exchanges o timeframes, esta lógica debe
-# parametrizarse por calendario.
-# =====================================================================
+def resolve_calendar_for_symbol(symbol: str):
+    if symbol == "QNC":
+        return xcals.get_calendar("XTSE")
 
-# Calendario oficial NYSE (sirve para NYSE + NASDAQ equities)
-XNYS_CAL = xcals.get_calendar("XNYS")
+    if symbol in ("SGLN", "URNU"):
+        return xcals.get_calendar("XLON")
+
+    return xcals.get_calendar("XNYS")
 
 def run_ohlcv_row_builder(ticker: str, body: Dict, ctx=None) -> List[Dict]:
     """
     Construye filas OHLCV normalizadas.
     Determina is_partial usando calendario oficial del exchange para 1D.
     """
+    cal = resolve_calendar_for_symbol(ticker)
+
     out: List[Dict] = []
     timeframe = body.get("timeframe", "")
     now_ts = int(time.time())
@@ -72,10 +44,7 @@ def run_ohlcv_row_builder(ticker: str, body: Dict, ctx=None) -> List[Dict]:
 
         # Solo aplicamos lógica institucional para 1D (case-insensitive)
         if timeframe.upper() == "1D" and ts == max_ts:
-
-            cal = XNYS_CAL
             tz = cal.tz
-
             now_exchange = pd.Timestamp.now(tz=tz)
 
             # 1) Sesión "vigente" relativa a NOW.

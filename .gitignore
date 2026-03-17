@@ -20,6 +20,9 @@ ws_traces/
 *.db
 *.sqlite
 *.sqlite3
+.env
+*.snapshot
+private_config.json
 
 # OS noise
 .DS_Store
