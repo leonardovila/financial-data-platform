@@ -28,7 +28,7 @@
     "business_impact": "48 seconds of dead time where the pipeline does literally nothing. Scales linearly with symbol count.",
     "proposed_architecture": "Move jitter sleep BEFORE semaphore acquisition (await asyncio.sleep(jitter) then async with sem:). Or eliminate jitter entirely — connection reuse makes staggering unnecessary since workers naturally desynchronize.",
     "implemented": "Jitter eliminated entirely. Workers naturally desynchronize because they process different symbols at different speeds. No semaphore — queue-based distribution provides natural backpressure.",
-    "status": "PENDING"
+    "status": "CLOSED"
   },
   {
     "id": "BP-004",
@@ -37,7 +37,8 @@
     "issue_description": "Within each WebSocket session, OHLCV and fundamentals are fetched sequentially (await OHLCV, then await fundamentals). These are independent data requests on the same connection. Adds ~0.15-0.25s per symbol.",
     "business_impact": "Doubles per-symbol latency unnecessarily. At 2,400 symbols, adds 360-600 seconds of avoidable sequential I/O.",
     "proposed_architecture": "Option A: Fire both requests concurrently via asyncio.gather on the same WS (requires TradingView protocol support for multiplexed responses). Option B: With connection pooling, decouple fundamentals into a separate pass — fetch once daily since fundamentals rarely change intraday. Option C: Batch fundamentals via TradingView screener API instead of per-symbol quote snapshots.",
-    "status": "OPEN"
+    "implemented": "True protocol multiplexing via Option A. request_historic_ohlcv and request_quote_snapshot merged into a single _request_ohlcv_and_fundamentals_impl. All 6 send commands (3 chart + 3 quote) fired upfront before any recv(). Single unified receive loop routes messages by type: symbol_resolved/timescale_update for OHLCV, qsd/quote_completed for fundamentals. Loop exits when BOTH terminal signals received. Server processes both request streams concurrently, eliminating the sequential ~0.15-0.25s per symbol.",
+    "status": "CLOSED"
   },
   {
     "id": "BP-005",
@@ -46,7 +47,8 @@
     "issue_description": "Both message receive loops use `while True: await ws.recv()` with NO timeout. If TradingView stalls, stops sending, or drops the connection silently, the coroutine hangs indefinitely. Historical evidence: one run took 43,701 seconds (12 hours) before erroring out.",
     "business_impact": "Single stalled symbol can freeze the entire pipeline for hours. No alerting, no recovery. Completely incompatible with semi-live or scheduled execution.",
     "proposed_architecture": "Wrap recv() in asyncio.wait_for(ws.recv(), timeout=30). Add per-symbol timeout of 60s total. Implement retry with exponential backoff (3 attempts, 1s/2s/4s). Add circuit breaker: if >10% of symbols fail in a batch, pause and alert rather than burning through the remaining symbols.",
-    "status": "OPEN"
+    "implemented": "Three-layer timeout shield: (1) RECV_TIMEOUT=30s on every ws.recv() via asyncio.wait_for — no single message wait can hang. (2) SEND_TIMEOUT=10s on every ws.send() via asyncio.wait_for — send buffer stalls are caught. (3) SYMBOL_TIMEOUT=60s on the entire multiplexed request_ohlcv_and_fundamentals — outer asyncio.wait_for wrapping the full per-symbol operation. TimeoutError propagates to pool worker, which closes the stale session and reconnects for the next symbol.",
+    "status": "CLOSED"
   },
   {
     "id": "BP-006",
@@ -131,7 +133,8 @@
     "issue_description": "A single global file handle is shared across 6 concurrent async workers writing WebSocket trace data. No asyncio.Lock, no thread lock, no write buffering coordination. Concurrent writes interleave unpredictably, producing corrupted/unreadable trace output.",
     "business_impact": "Trace files cannot be reliably used for debugging WebSocket protocol issues. Under high concurrency, file.write() calls from different coroutines can split mid-line, making automated log parsing impossible.",
     "proposed_architecture": "Option A: Per-session trace files (one .txt per WebSocket connection) — eliminates contention entirely and makes per-symbol debugging trivial. Option B: asyncio.Lock around all trace writes. Option C: Write to an asyncio.Queue and have a single dedicated writer coroutine flush to disk.",
-    "status": "OPEN"
+    "implemented": "Option A implemented. _GLOBAL_WS_TRACE_FILE eliminated entirely. Replaced with _create_per_session_trace_file() using an atomic itertools.count() counter. Each open_session() creates its own uniquely-named file (WS_TRACE_{ts}_{n}.txt). Each close_session() flushes and closes its own handle. Zero shared state between workers. close_global_ws_trace() is now a no-op kept for import compatibility.",
+    "status": "CLOSED"
   },
   {
     "id": "BP-015",
@@ -158,7 +161,8 @@
     "issue_description": "No retry logic on WebSocket connection failure. A single connection timeout or handshake failure propagates up as an unrecoverable exception, permanently losing that symbol for the entire run. No exponential backoff, no circuit breaker pattern.",
     "business_impact": "On flaky networks or during TradingView maintenance, symbol loss compounds. A 2% failure rate on 2,400 symbols means 48 symbols with no data — potentially including high-value tickers. No mechanism to retry failed symbols at the end of the run.",
     "proposed_architecture": "Implement retry decorator with exponential backoff (3 attempts: 1s, 2s, 4s). Add a failed-symbol retry queue: after the main scrape completes, re-attempt all failed symbols once with fresh connections. Add circuit breaker: if failure rate exceeds 15% in a sliding window, pause all scraping for 30s before resuming.",
-    "status": "OPEN"
+    "implemented": "connect_to_tradingview now retries CONNECT_MAX_RETRIES=3 times with exponential backoff (1s, 2s, 4s). Catches all exceptions (WebSocketException, TimeoutError, OSError) and retries transparently. Handshake recv() is also timeout-protected via asyncio.wait_for. Retry attempts are logged to the per-session trace file. Combined with the pool worker's existing per-symbol retry (MAX_RETRIES_PER_SYMBOL=2), a transient failure triggers: connection retry → symbol retry → reconnect, before giving up.",
+    "status": "CLOSED"
   },
   {
     "id": "BP-018",

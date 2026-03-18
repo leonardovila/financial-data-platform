@@ -1,35 +1,52 @@
+"""
+TradingView WebSocket tunnel.
+
+Refactored for:
+  BP-004: Multiplexed OHLCV + fundamentals (overlapped I/O in single recv loop)
+  BP-005: Strict timeouts on every recv/send (no more 12-hour hangs)
+  BP-014: Per-session trace files (no global shared state)
+  BP-017: Connection retry with exponential backoff
+"""
+
 from __future__ import annotations
 from typing import Dict, Any, Optional
-import json, re, websockets
+import json, re, asyncio, itertools, websockets
 from pathlib import Path
 from datetime import datetime
 from financial_data_etl.scraping_pipeline.tv_websocket_connection.parsing.ohlcv_parser import parse_ohlcv
 
-# Explicitamente decido no agregar ctx aca. Este modulo, es el tunel que conecta con el ws y donde se trae la data raw
-# Aclarado eso, genera su propio logging con .txt con dumps que registran la comunicacion con el ws
+# ──────────────────────────────────────────────────────────────────────────────
+# TIMEOUTS & RETRY CONFIG
+# ──────────────────────────────────────────────────────────────────────────────
+RECV_TIMEOUT = 30       # seconds per ws.recv()
+SEND_TIMEOUT = 10       # seconds per ws.send()
+SYMBOL_TIMEOUT = 60     # seconds for entire per-symbol multiplexed request
+CONNECT_MAX_RETRIES = 3 # retries on connection failure with backoff
 
-# Global trace file (1 per execution)
-_GLOBAL_WS_TRACE_FILE = None
-def _create_ws_trace_file() -> Optional[Any]:
-    global _GLOBAL_WS_TRACE_FILE
+# ──────────────────────────────────────────────────────────────────────────────
+# PER-SESSION TRACE FILES (BP-014)
+# Each open_session() creates its own file. No global shared state.
+# ──────────────────────────────────────────────────────────────────────────────
+_trace_counter = itertools.count()
 
-    if _GLOBAL_WS_TRACE_FILE is not None:
-        return _GLOBAL_WS_TRACE_FILE
 
+def _create_per_session_trace_file():
     logs_dir = Path("ws_traces")
     logs_dir.mkdir(exist_ok=True)
     ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    trace_path = logs_dir / f"WS_TRACE_{ts}.txt"
+    n = next(_trace_counter)
+    trace_path = logs_dir / f"WS_TRACE_{ts}_{n}.txt"
+    return trace_path.open("w", encoding="utf-8")
 
-    _GLOBAL_WS_TRACE_FILE = trace_path.open("w", encoding="utf-8")
-    return _GLOBAL_WS_TRACE_FILE
 
 def close_global_ws_trace():
-    global _GLOBAL_WS_TRACE_FILE
-    if _GLOBAL_WS_TRACE_FILE:
-        _GLOBAL_WS_TRACE_FILE.write("\nEXECUTION FINISHED\n")
-        _GLOBAL_WS_TRACE_FILE.close()
-        _GLOBAL_WS_TRACE_FILE = None
+    """No-op: trace files are now per-session, closed in close_session()."""
+    pass
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# LOW-LEVEL SEND (BP-005: timeout-protected)
+# ──────────────────────────────────────────────────────────────────────────────
 
 async def send_to_tradingview(websocket, message_dict, trace_file=None):
     message_json = json.dumps(message_dict)
@@ -37,70 +54,172 @@ async def send_to_tradingview(websocket, message_dict, trace_file=None):
     if trace_file:
         trace_file.write("SEND:\n")
         trace_file.write(json.dumps(message_dict) + "\n\n")
-    await websocket.send(payload)
+    await asyncio.wait_for(websocket.send(payload), timeout=SEND_TIMEOUT)
 
-async def request_quote_snapshot(
+
+# ──────────────────────────────────────────────────────────────────────────────
+# CONNECTION (BP-017: retry with exponential backoff)
+# ──────────────────────────────────────────────────────────────────────────────
+
+async def connect_to_tradingview(timeout_s: int = 15, trace_file=None):
+    uri = "wss://data.tradingview.com/socket.io/websocket?from=chart%2F&date=2025_03_31-11_22&type=chart"
+
+    for attempt in range(CONNECT_MAX_RETRIES + 1):
+        try:
+            websocket = await websockets.connect(
+                uri,
+                extra_headers={
+                    "Origin": "https://www.tradingview.com",
+                    "User-Agent": "Mozilla/5.0"
+                },
+                open_timeout=timeout_s,
+            )
+
+            rawMessage = await asyncio.wait_for(websocket.recv(), timeout=timeout_s)
+            if trace_file:
+                trace_file.write("HANDSHAKE RECEIVE RAW:\n")
+                trace_file.write(rawMessage + "\n\n")
+
+            sessionIdMatch = re.search(r'"session_id":"([^"]+)"', rawMessage)
+            if not sessionIdMatch:
+                await websocket.close()
+                raise RuntimeError("No session_id en handshake de TradingView")
+
+            chartSession = f"cs_{sessionIdMatch.group(1)}"
+            if trace_file:
+                trace_file.write(f"SESSION_ID: {chartSession}\n\n")
+            return websocket, chartSession
+
+        except Exception as e:
+            if attempt < CONNECT_MAX_RETRIES:
+                backoff = 1 * (2 ** attempt)  # 1s, 2s, 4s
+                if trace_file:
+                    trace_file.write(f"CONNECT RETRY {attempt + 1}/{CONNECT_MAX_RETRIES} after {backoff}s: {e}\n\n")
+                await asyncio.sleep(backoff)
+            else:
+                raise
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# SESSION MANAGEMENT (BP-014: per-session trace lifecycle)
+# ──────────────────────────────────────────────────────────────────────────────
+
+async def open_session(trace: bool = True) -> Dict[str, Any]:
+    trace_file = _create_per_session_trace_file() if trace else None
+
+    ws, chart = await connect_to_tradingview(trace_file=trace_file)
+
+    if not ws or not chart:
+        if trace_file:
+            trace_file.write("ERROR: can not open session\n")
+            trace_file.close()
+        raise RuntimeError("can not open session TradingView session")
+
+    if trace_file:
+        trace_file.write(f"\nSESSION ESTABLISHED\n")
+        trace_file.write(f"CHART_ID: {chart}\n\n")
+
+    return {
+        "ws": ws,
+        "chart_id": chart,
+        "trace_file": trace_file,
+    }
+
+
+async def close_session(session: Dict[str, Any]) -> None:
+    try:
+        await session["ws"].close()
+    except Exception:
+        pass
+    finally:
+        tf = session.get("trace_file")
+        if tf:
+            try:
+                tf.write("\nSESSION CLOSED\n")
+                tf.flush()
+                tf.close()
+            except Exception:
+                pass
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# MULTIPLEXED OHLCV + FUNDAMENTALS (BP-004 + BP-005)
+#
+# Architecture:
+#   1. Fire ALL send commands upfront (3 chart + 3 quote) — no waiting between
+#   2. Single receive loop routes messages by type (timescale_update vs qsd)
+#   3. Loop exits when BOTH ohlcv_done AND quote_done
+#   4. Every recv() is timeout-protected (BP-005: RECV_TIMEOUT)
+#   5. Entire operation is timeout-protected (BP-005: SYMBOL_TIMEOUT)
+# ──────────────────────────────────────────────────────────────────────────────
+
+_TF_ALIAS_FOR_TV = {
+    "1d": "1D", "1h": "1H", "1m": "1M", "5m": "5M",
+    "15m": "15M", "30m": "30M", "2h": "2H", "4h": "4H", "1w": "1W",
+}
+
+
+async def _request_ohlcv_and_fundamentals_impl(
     session: Dict[str, Any],
     provider_symbol: str,
+    timeframe: str,
+    n: int,
 ) -> Dict[str, Any]:
     ws = session["ws"]
     trace_file = session.get("trace_file")
+    chart_id = session["chart_id"]
+    quote_id = session.get("quote_id", "qs_multiplexer_full_1")
+    tf_tv = _TF_ALIAS_FOR_TV.get(timeframe, timeframe.upper())
 
-    quote_session = session.get("quote_id", "qs_multiplexer_full_1")
+    # ── FIRE ALL REQUESTS UPFRONT (overlapped I/O) ──
 
-    # 1) create quote session
-    await send_to_tradingview(
-        ws,
-        {"m": "quote_create_session", "p": [quote_session]},
-        trace_file=trace_file,
-    )
+    # Chart (OHLCV)
+    await send_to_tradingview(ws, {"m": "chart_create_session", "p": [chart_id]}, trace_file)
+    await send_to_tradingview(ws, {"m": "resolve_symbol", "p": [chart_id, "s1", provider_symbol]}, trace_file)
+    await send_to_tradingview(ws, {
+        "m": "create_series",
+        "p": [chart_id, "sds_1", "s1", "s1", tf_tv, n, ""]
+    }, trace_file)
 
-    # 2) set fields (pedimos más de lo que usamos)
-    await send_to_tradingview(
-        ws,
-        {
-            "m": "quote_set_fields",
-            "p": [
-                quote_session,
-                "market_cap_basic",
-                "market_cap_calc",
-                "total_shares_outstanding_current",
-                "total_shares_outstanding_calculated",
-                "price_earnings_ttm",
-                "earnings_per_share_basic_ttm",
-                "industry",
-                "sector",
-            ],
-        },
-        trace_file=trace_file,
-    )
+    # Quote (Fundamentals) — sent IMMEDIATELY after chart, no waiting for chart response
+    await send_to_tradingview(ws, {"m": "quote_create_session", "p": [quote_id]}, trace_file)
+    await send_to_tradingview(ws, {
+        "m": "quote_set_fields",
+        "p": [
+            quote_id,
+            "market_cap_basic",
+            "market_cap_calc",
+            "total_shares_outstanding_current",
+            "total_shares_outstanding_calculated",
+            "price_earnings_ttm",
+            "earnings_per_share_basic_ttm",
+            "industry",
+            "sector",
+        ],
+    }, trace_file)
+    await send_to_tradingview(ws, {
+        "m": "quote_add_symbols",
+        "p": [
+            quote_id,
+            f"={{\"adjustment\":\"splits\",\"currency-id\":\"USD\",\"symbol\":\"{provider_symbol}\"}}",
+        ],
+    }, trace_file)
 
-    # 3) add symbol
-    await send_to_tradingview(
-        ws,
-        {
-            "m": "quote_add_symbols",
-            "p": [
-                quote_session,
-                f"={{\"adjustment\":\"splits\",\"currency-id\":\"USD\",\"symbol\":\"{provider_symbol}\"}}",
-            ],
-        },
-        trace_file=trace_file,
-    )
+    # ── UNIFIED RECEIVE LOOP: route by message type ──
+    ohlcv_payload = None
+    company_name: Optional[str] = None
+    quote_snapshot: Dict[str, Any] = {}
+    ohlcv_done = False
+    quote_done = False
 
-    # 4) esperar qsd
-    snapshot: Dict[str, Any] = {}
-
-    while True:
-        message = await ws.recv()
+    while not (ohlcv_done and quote_done):
+        message = await asyncio.wait_for(ws.recv(), timeout=RECV_TIMEOUT)
 
         if trace_file:
             trace_file.write("RECEIVE RAW:\n")
             trace_file.write(message + "\n\n")
 
-        splitMessages = re.split(r"~m~\d+~m~", message)[1:]
-
-        for chunk in splitMessages:
+        for chunk in re.split(r"~m~\d+~m~", message)[1:]:
             if not chunk.strip():
                 continue
 
@@ -111,128 +230,43 @@ async def request_quote_snapshot(
 
             mtype = payload.get("m")
 
-            if mtype == "qsd":
+            # ── OHLCV responses ──
+            if mtype == "symbol_resolved":
+                p = payload.get("p")
+                if isinstance(p, list) and len(p) >= 3:
+                    meta = p[2]
+                    if isinstance(meta, dict):
+                        company_name = meta.get("local_description") or meta.get("description")
+
+            elif mtype == "timescale_update":
+                if trace_file:
+                    trace_file.write("TIMESCALE_UPDATE DETECTED\n\n")
+                ohlcv_payload = payload
+                ohlcv_done = True
+
+            # ── Quote/Fundamentals responses ──
+            elif mtype == "qsd":
                 p = payload.get("p")
                 if isinstance(p, list) and len(p) >= 2:
                     second = p[1]
                     if isinstance(second, dict):
                         v = second.get("v")
                         if isinstance(v, dict):
-                            # 🔥 MERGEAMOS
-                            snapshot.update(v)
+                            quote_snapshot.update(v)
 
             elif mtype == "quote_completed":
-                return {
-                    "symbol": provider_symbol,
-                    "raw": snapshot,
-                }
-async def request_historic_ohlcv(websocket, chartSession, num_candles, symbol, timeframe, trace_file=None):
-    # 1) handshake / crear serie
-    await send_to_tradingview(websocket, {"m": "chart_create_session", "p": [chartSession]}, trace_file=trace_file)
-    await send_to_tradingview(websocket, {"m": "resolve_symbol", "p": [chartSession, "s1", symbol]}, trace_file=trace_file)
-    await send_to_tradingview(websocket, {
-        "m": "create_series",
-        "p": [chartSession, "sds_1", "s1", "s1", timeframe, num_candles, ""]
-    }, trace_file=trace_file)
+                quote_done = True
 
-    # 2) loop de recepción hasta encontrar timescale_update
-    data = None
-    company_name: Optional[str] = None  
-    try:
-        while True:
-            message = await websocket.recv()
-            if trace_file:
-                trace_file.write("RECEIVE RAW:\n")
-                trace_file.write(message + "\n\n")
-            splitMessages = re.split(r"~m~\d+~m~", message)[1:]
-            for chunk in splitMessages:
-                if not chunk.strip():
-                    continue
-                try:
-                    payload = json.loads(chunk)
-                except json.JSONDecodeError:
-                        continue
-                
-                if payload.get("m") == "symbol_resolved":
-                    p = payload.get("p")
-                    if isinstance(p, list) and len(p) >= 3:
-                        meta = p[2]
-                        if isinstance(meta, dict):
-                            company_name = meta.get("local_description") or meta.get("description")
-
-                if payload.get("m") == "timescale_update":
-                    if trace_file:
-                        trace_file.write("TIMESCALE_UPDATE DETECTED\n\n")
-                    return {
-                        "timescale_update": payload,
-                        "company_name": company_name,
-                    }
-    except websockets.ConnectionClosed as e:
-        raise
-
-async def connect_to_tradingview(timeout_s: int = 15, trace_file=None):
-    # La fecha en el querystring no importa funcionalmente; dejamos un valor fijo válido.
-    uri = "wss://data.tradingview.com/socket.io/websocket?from=chart%2F&date=2025_03_31-11_22&type=chart"
-    websocket = await websockets.connect(
-        uri,
-        extra_headers={
-            "Origin": "https://www.tradingview.com",
-            "User-Agent": "Mozilla/5.0"
-        },
-        open_timeout=timeout_s,
-    )
-
-    rawMessage = await websocket.recv()
-    if trace_file:
-        trace_file.write("HANDSHAKE RECEIVE RAW:\n")
-        trace_file.write(rawMessage + "\n\n")
-
-    sessionIdMatch = re.search(r'"session_id":"([^"]+)"', rawMessage)
-    if not sessionIdMatch:
-        await websocket.close()
-        raise RuntimeError("No session_id en handshake de TradingView")
-
-    chartSession = f"cs_{sessionIdMatch.group(1)}"
-    if trace_file:
-        trace_file.write(f"SESSION_ID: {chartSession}\n\n")
-    return websocket, chartSession
-
-# ──────────────────────────────────────────────────────────────────────────────
-# CAPA ADAPTADORA (lo que usa call_executor)
-# ──────────────────────────────────────────────────────────────────────────────
-
-async def open_session(trace: bool = True) -> Dict[str, Any]:
-    trace_file = _create_ws_trace_file()
-
-    ws, chart = await connect_to_tradingview(trace_file=trace_file)
-
-    if not ws or not chart:
-        trace_file.write("ERROR: can not open session\n")
-        trace_file.close()
-        raise RuntimeError("can not open session TradingView session")
-
-    trace_file.write(f"\nSESSION ESTABLISHED\n")
-    trace_file.write(f"CHART_ID: {chart}\n\n")
+    candles = parse_ohlcv(ohlcv_payload)
 
     return {
-        "ws": ws,
-        "chart_id": chart,
-        "trace_file": trace_file,
+        "symbol": provider_symbol,
+        "timeframe": timeframe,
+        "candles": candles,
+        "fundamentals_raw": quote_snapshot,
+        "company_name": company_name,
     }
 
-async def close_session(session: Dict[str, Any]) -> None:
-    try:
-        await session["ws"].close()
-    except Exception as e:
-        pass
-    finally:
-        tf = session.get("trace_file")
-        if tf:
-            tf.write("\nSESSION CLOSED\n")
-            tf.flush()
-
-# Mapeo simple de TF a lo que espera tu WS
-_TF_ALIAS_FOR_TV = {"1d": "1D", "1h": "1H", "1m": "1M", "5m": "5M", "15m": "15M", "30m": "30M", "2h": "2H", "4h": "4H", "1w": "1W"}
 
 async def request_ohlcv_and_fundamentals(
     session: Dict[str, Any],
@@ -240,49 +274,29 @@ async def request_ohlcv_and_fundamentals(
     timeframe: str,
     n: int,
 ) -> Dict[str, Any]:
-
-    tf_tv = _TF_ALIAS_FOR_TV.get(timeframe, timeframe.upper())
-
-    # 1️⃣ OHLCV
-    data = await request_historic_ohlcv(
-        session["ws"],
-        session["chart_id"],
-        n,
-        provider_symbol,
-        tf_tv,
-        trace_file=session.get("trace_file"),
+    """Multiplexed OHLCV + fundamentals with overall per-symbol timeout."""
+    return await asyncio.wait_for(
+        _request_ohlcv_and_fundamentals_impl(session, provider_symbol, timeframe, n),
+        timeout=SYMBOL_TIMEOUT,
     )
 
-    candles = parse_ohlcv(data["timescale_update"])
-    company_name = data.get("company_name")
 
-    # 2️⃣ FUNDAMENTALS (MISMA SESIÓN)
-    fundamentals = await request_quote_snapshot(
-        session,
-        provider_symbol,
-    )
-
-    return {
-        "symbol": provider_symbol,
-        "timeframe": timeframe,
-        "candles": candles,
-        "fundamentals_raw": fundamentals.get("raw"),
-        "company_name": company_name,
-    }
-
+# ──────────────────────────────────────────────────────────────────────────────
+# CLEANUP (timeout-protected sends)
+# ──────────────────────────────────────────────────────────────────────────────
 
 async def cleanup_chart_and_quote(session: Dict[str, Any]) -> None:
-    """Delete chart and quote sessions so the connection can be reused for the next symbol."""
+    """Delete chart and quote sessions so the connection can be reused."""
     ws = session["ws"]
     trace_file = session.get("trace_file")
     chart_id = session.get("chart_id")
     quote_id = session.get("quote_id", "qs_multiplexer_full_1")
 
     try:
-        await send_to_tradingview(ws, {"m": "chart_delete_session", "p": [chart_id]}, trace_file=trace_file)
+        await send_to_tradingview(ws, {"m": "chart_delete_session", "p": [chart_id]}, trace_file)
     except Exception:
         pass
     try:
-        await send_to_tradingview(ws, {"m": "quote_delete_session", "p": [quote_id]}, trace_file=trace_file)
+        await send_to_tradingview(ws, {"m": "quote_delete_session", "p": [quote_id]}, trace_file)
     except Exception:
         pass
