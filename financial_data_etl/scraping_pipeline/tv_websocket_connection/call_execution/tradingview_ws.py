@@ -46,7 +46,7 @@ async def request_quote_snapshot(
     ws = session["ws"]
     trace_file = session.get("trace_file")
 
-    quote_session = "qs_multiplexer_full_1"
+    quote_session = session.get("quote_id", "qs_multiplexer_full_1")
 
     # 1) create quote session
     await send_to_tradingview(
@@ -269,3 +269,20 @@ async def request_ohlcv_and_fundamentals(
         "fundamentals_raw": fundamentals.get("raw"),
         "company_name": company_name,
     }
+
+
+async def cleanup_chart_and_quote(session: Dict[str, Any]) -> None:
+    """Delete chart and quote sessions so the connection can be reused for the next symbol."""
+    ws = session["ws"]
+    trace_file = session.get("trace_file")
+    chart_id = session.get("chart_id")
+    quote_id = session.get("quote_id", "qs_multiplexer_full_1")
+
+    try:
+        await send_to_tradingview(ws, {"m": "chart_delete_session", "p": [chart_id]}, trace_file=trace_file)
+    except Exception:
+        pass
+    try:
+        await send_to_tradingview(ws, {"m": "quote_delete_session", "p": [quote_id]}, trace_file=trace_file)
+    except Exception:
+        pass

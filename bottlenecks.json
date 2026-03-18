@@ -1,0 +1,186 @@
+[
+  {
+    "id": "BP-001",
+    "component": "call_executor.py → open_session / close_session",
+    "severity": "CRITICAL",
+    "issue_description": "Every single symbol (2,400+) opens a fresh WebSocket connection: TCP handshake, TLS negotiation, TradingView session handshake, then tears it down. 2,400 connection lifecycles at ~0.45s each. This is the single largest time sink in the entire pipeline (870s / 86.7% of total runtime).",
+    "business_impact": "Makes sub-5-minute pipeline execution physically impossible. Eliminates any chance of semi-live data. Connection churn invites rate limiting and IP bans from TradingView.",
+    "proposed_architecture": "Connection pool of 10-20 persistent WebSocket sessions. Each session processes N symbols sequentially before recycling. Amortize handshake cost across hundreds of symbols per connection. Pattern: asyncio queue of symbols → pool of long-lived worker sessions draining the queue.",
+    "implemented": "Pool of WS_POOL_SIZE (default 20, env-configurable) persistent workers. Each opens ONE WebSocket, drains symbols from asyncio.Queue, reuses connection via unique chart/quote session IDs + cleanup_chart_and_quote(). Reconnects on ConnectionClosed with up to 2 retries per symbol. call_executor_pooled() separates execution from session lifecycle. main_runner.py passes full plan dict instead of grouping by n_candles.",
+    "empirical_constraint": "TradingView WAF (Web Application Firewall) imposes a strict hard-limit of 6 concurrent WebSocket connections per IP. Attempting WS_POOL_SIZE > 6 triggers immediate HTTP 429 (Too Many Requests) rejections. Pool size is permanently capped at 6. Despite this strict concurrency ceiling, eliminating the TLS/TCP handshake churn via persistent connections successfully collapsed network latency by ~60%.",
+    "status": "DONE"
+  },
+  {
+    "id": "BP-002",
+    "component": "tv_websocket_scraper.py → WS_CONCURRENCY",
+    "severity": "CRITICAL",
+    "issue_description": "Concurrency hardcoded to 6. With 2,400 symbols at 0.45s each, the semaphore alone imposes a floor of 180s. No runtime tuning, no adaptive backpressure, no configuration. The value 6 was chosen conservatively and never benchmarked.",
+    "business_impact": "Artificial throughput ceiling. Even with connection pooling, 6 slots wastes available network and server capacity. Blocks scaling to higher symbol counts.",
+    "proposed_architecture": "Make concurrency configurable via CLI/env (--ws-concurrency). Benchmark at 12, 20, 30 to find TradingView's actual rate limit. Implement adaptive concurrency: start high, back off on 429/disconnect. Target: 15-20 concurrent persistent connections.",
+    "implemented": "WS_POOL_SIZE defaults to 20, configurable via WS_POOL_SIZE env var. Semaphore replaced by queue-based pool — all workers run concurrently, no artificial gating. Pool size auto-caps at min(WS_POOL_SIZE, len(plan)) to avoid idle workers on small runs.",
+    "status": "DONE"
+  },
+  {
+    "id": "BP-003",
+    "component": "tv_websocket_scraper.py → worker() semaphore + jitter",
+    "severity": "HIGH",
+    "issue_description": "The 120ms jitter sleep (WS_JITTER_S=0.12) executes WHILE HOLDING the semaphore slot. With 6 slots and 2,400 symbols, this wastes 2400 * 0.12 / 6 = 48 seconds of pure idle time blocking other workers from proceeding.",
+    "business_impact": "48 seconds of dead time where the pipeline does literally nothing. Scales linearly with symbol count.",
+    "proposed_architecture": "Move jitter sleep BEFORE semaphore acquisition (await asyncio.sleep(jitter) then async with sem:). Or eliminate jitter entirely — connection reuse makes staggering unnecessary since workers naturally desynchronize.",
+    "implemented": "Jitter eliminated entirely. Workers naturally desynchronize because they process different symbols at different speeds. No semaphore — queue-based distribution provides natural backpressure.",
+    "status": "PENDING"
+  },
+  {
+    "id": "BP-004",
+    "component": "tradingview_ws.py → request_ohlcv_and_fundamentals",
+    "severity": "HIGH",
+    "issue_description": "Within each WebSocket session, OHLCV and fundamentals are fetched sequentially (await OHLCV, then await fundamentals). These are independent data requests on the same connection. Adds ~0.15-0.25s per symbol.",
+    "business_impact": "Doubles per-symbol latency unnecessarily. At 2,400 symbols, adds 360-600 seconds of avoidable sequential I/O.",
+    "proposed_architecture": "Option A: Fire both requests concurrently via asyncio.gather on the same WS (requires TradingView protocol support for multiplexed responses). Option B: With connection pooling, decouple fundamentals into a separate pass — fetch once daily since fundamentals rarely change intraday. Option C: Batch fundamentals via TradingView screener API instead of per-symbol quote snapshots.",
+    "status": "OPEN"
+  },
+  {
+    "id": "BP-005",
+    "component": "tradingview_ws.py → request_historic_ohlcv / request_quote_snapshot",
+    "severity": "CRITICAL",
+    "issue_description": "Both message receive loops use `while True: await ws.recv()` with NO timeout. If TradingView stalls, stops sending, or drops the connection silently, the coroutine hangs indefinitely. Historical evidence: one run took 43,701 seconds (12 hours) before erroring out.",
+    "business_impact": "Single stalled symbol can freeze the entire pipeline for hours. No alerting, no recovery. Completely incompatible with semi-live or scheduled execution.",
+    "proposed_architecture": "Wrap recv() in asyncio.wait_for(ws.recv(), timeout=30). Add per-symbol timeout of 60s total. Implement retry with exponential backoff (3 attempts, 1s/2s/4s). Add circuit breaker: if >10% of symbols fail in a batch, pause and alert rather than burning through the remaining symbols.",
+    "status": "OPEN"
+  },
+  {
+    "id": "BP-006",
+    "component": "volatility_runner.py / price_performance_runner.py / volume_runner.py → symbol loop",
+    "severity": "CRITICAL",
+    "issue_description": "All three derived metric runners iterate over 2,400 symbols in a Python for-loop, executing 2-3 individual SQLite queries per symbol per runner: get_last_ts() + load_window() + upsert(). Total: 3 runners × 3 queries × 2,400 symbols = 21,600 individual database round-trips. Each query opens a NEW sqlite3.Connection via _get_connection().",
+    "business_impact": "124.5 seconds spent on derived metrics (12.4% of runtime). The N+1 query pattern and connection churn are responsible for the majority of this. Makes adding more symbols or metrics untenable — scales linearly.",
+    "proposed_architecture": "Bulk pattern (same as increment_planner.py already does): 1) Single query: SELECT symbol, MAX(ts) FROM volatility_1d WHERE symbol IN (...) GROUP BY symbol. 2) Single query: SELECT symbol, ts, high, low, close FROM tv_candles_raw WHERE symbol IN (...) AND timeframe='1d' ORDER BY symbol, ts. 3) Compute all symbols in-memory. 4) Single executemany upsert for all symbols. Reduce 21,600 queries to ~9 total.",
+    "status": "OPEN"
+  },
+  {
+    "id": "BP-007",
+    "component": "volatility_runner.py → _compute_volatility_series / volume_runner.py → _sma",
+    "severity": "HIGH",
+    "issue_description": "All derived metric calculations use pure Python list iteration: manual log-return computation, manual rolling mean/variance with sum()/list slicing, manual SMA with repeated full-list passes. For 2,400 symbols × ~252 data points × 5 windows, this is millions of interpreted Python arithmetic operations.",
+    "business_impact": "CPU-bound bottleneck. Volatility alone takes 51.8s. NumPy vectorization would reduce this to sub-second. Blocks any future addition of more complex metrics (e.g., Sharpe ratio, drawdown, correlation matrices).",
+    "proposed_architecture": "Load all symbols' data into a single pandas DataFrame (or numpy structured array). Use df.groupby('symbol').apply() with vectorized operations: np.log(close/close.shift(1)) for log returns, .rolling(window).std() * sqrt(252) for volatility, .rolling(window).mean() for SMA. Single vectorized pass replaces 2,400 Python loops. Expected speedup: 50-100x.",
+    "status": "OPEN"
+  },
+  {
+    "id": "BP-008",
+    "component": "main_runner.py → derived_metrics orchestration",
+    "severity": "HIGH",
+    "issue_description": "Price performance, volatility, and volume runners execute sequentially (33.7s + 51.8s + 39.0s = 124.5s). They read from the same source table (tv_candles_raw) and write to three independent tables (performance_1d, volatility_1d, volume_1d). Zero data dependency between them.",
+    "business_impact": "Total derived metrics time is the SUM of all three instead of the MAX. With parallelization, 124.5s → ~52s (bounded by the slowest runner). Combined with BP-007 vectorization, could drop to <2s.",
+    "proposed_architecture": "concurrent.futures.ThreadPoolExecutor(max_workers=3) to run all three metric runners in parallel. SQLite WAL mode supports concurrent readers. Alternatively, if vectorized with pandas, compute all three metric sets in a single grouped pass over the data — no need for separate runners at all.",
+    "status": "OPEN"
+  },
+  {
+    "id": "BP-009",
+    "component": "volatility_store.py / performance_store.py / volume_store.py → _get_connection()",
+    "severity": "HIGH",
+    "issue_description": "Every function call (get_last_vol_ts, _load_ohlc_window_1d, upsert_volatility_rows, etc.) creates a brand new sqlite3.Connection, sets PRAGMA WAL, sets PRAGMA synchronous, then discards it. For the derived metrics phase alone, this creates and destroys 21,600+ connections.",
+    "business_impact": "Connection setup overhead (file open, PRAGMA execution, WAL checkpoint negotiation) multiplied 21,600 times. Contributes significantly to the 124.5s derived metrics duration. Also prevents SQLite from efficiently caching prepared statements.",
+    "proposed_architecture": "Connection-per-phase pattern: open ONE connection at the start of each runner (or share one across all three), pass it through all function calls, close at the end. Alternatively, use a module-level connection singleton with lazy initialization. SQLite connections are not thread-safe, but within a single-threaded runner this is perfectly safe.",
+    "status": "OPEN"
+  },
+  {
+    "id": "BP-010",
+    "component": "fundamentals_store.py → persist_fundamentals_snapshot",
+    "severity": "MEDIUM",
+    "issue_description": "Two compounding issues: (1) Uses bare sqlite3.connect() WITHOUT WAL mode or PRAGMA synchronous — default journal mode with full fsync on every implicit transaction. (2) Executes individual conn.execute(INSERT) in a for-loop instead of executemany(). For 2,400 symbols, that's 2,400 individual INSERT statements.",
+    "business_impact": "Currently fast (0.05s) because SQLite batches within the single commit, but under concurrent API load this will cause 'database is locked' errors. As data grows, the unbatched pattern will degrade. Inconsistent with the batched pattern used elsewhere.",
+    "proposed_architecture": "1) Add PRAGMA journal_mode=WAL and synchronous=NORMAL. 2) Replace the for-loop with executemany() and a list comprehension to build all values upfront. 3) Use the same _get_connection() pattern from tv_candles_store.py for consistency.",
+    "status": "OPEN"
+  },
+  {
+    "id": "BP-011",
+    "component": "api/db.py → get_connection()",
+    "severity": "HIGH",
+    "issue_description": "The FastAPI application's database layer is 6 lines of bare sqlite3.connect() with zero configuration. No WAL mode, no synchronous pragma, no connection pooling, no query timeout. Every API request opens a raw connection in default DELETE journal mode.",
+    "business_impact": "Under concurrent API requests, readers will block on ETL writers (and vice versa). 'database is locked' errors will occur under any meaningful load. Incompatible with the semi-live API ambition. No connection reuse means repeated file-open overhead per request.",
+    "proposed_architecture": "1) Add WAL + synchronous=NORMAL to get_connection(). 2) Implement connection pooling (e.g., a simple queue of pre-configured connections, or use aiosqlite for async FastAPI). 3) Add PRAGMA busy_timeout=5000 to wait instead of failing on lock contention. 4) Consider read-only connections for GET endpoints (PRAGMA query_only=ON).",
+    "status": "OPEN"
+  },
+  {
+    "id": "BP-012",
+    "component": "sync_db_to_server.py → VACUUM INTO + SCP",
+    "severity": "CRITICAL",
+    "issue_description": "Database sync creates a full 3.5GB VACUUM INTO snapshot, then SCPs the ENTIRE file to the remote server. VACUUM INTO rewrites every page of the database. SCP transfers every byte with no delta compression. Historical sync times: 987s, 1,460s (16-24 minutes).",
+    "business_impact": "Sync alone can exceed the entire scraping duration. Makes frequent syncs impossible. Blocks the pipeline during VACUUM (exclusive lock on source DB). The 3.5GB transfer burns bandwidth on every run even when only a few MB of data changed.",
+    "proposed_architecture": "Option A: rsync with --checksum to transfer only changed blocks (~5-50MB instead of 3.5GB). Option B: Litestream for continuous SQLite replication (real-time streaming of WAL changes). Option C: Dump only changed rows since last sync (SELECT WHERE ingested_at > last_sync_ts) and apply as INSERT on remote. Option D: If sticking with SCP, use zstd compression before transfer (3.5GB → ~500MB).",
+    "status": "OPEN"
+  },
+  {
+    "id": "BP-013",
+    "component": "tv_candles_store.py → idx_tv_candles_symbol_tf_ts",
+    "severity": "LOW",
+    "issue_description": "Creates an explicit index idx_tv_candles_symbol_tf_ts ON tv_candles_raw(symbol, timeframe, ts) which exactly duplicates the PRIMARY KEY (symbol, timeframe, ts). SQLite automatically creates an internal index for the primary key constraint. This redundant index doubles write amplification on every INSERT/UPDATE.",
+    "business_impact": "Every upsert writes to two identical B-trees instead of one. For bootstrap runs inserting millions of rows, this doubles index maintenance overhead. Wastes ~500MB+ of disk space in the 3.5GB database.",
+    "proposed_architecture": "Drop the redundant index: DROP INDEX IF EXISTS idx_tv_candles_symbol_tf_ts. The primary key index handles all queries. If additional access patterns emerge (e.g., queries by ts alone), create targeted partial indexes instead.",
+    "status": "OPEN"
+  },
+  {
+    "id": "BP-014",
+    "component": "tradingview_ws.py → _GLOBAL_WS_TRACE_FILE",
+    "severity": "MEDIUM",
+    "issue_description": "A single global file handle is shared across 6 concurrent async workers writing WebSocket trace data. No asyncio.Lock, no thread lock, no write buffering coordination. Concurrent writes interleave unpredictably, producing corrupted/unreadable trace output.",
+    "business_impact": "Trace files cannot be reliably used for debugging WebSocket protocol issues. Under high concurrency, file.write() calls from different coroutines can split mid-line, making automated log parsing impossible.",
+    "proposed_architecture": "Option A: Per-session trace files (one .txt per WebSocket connection) — eliminates contention entirely and makes per-symbol debugging trivial. Option B: asyncio.Lock around all trace writes. Option C: Write to an asyncio.Queue and have a single dedicated writer coroutine flush to disk.",
+    "status": "OPEN"
+  },
+  {
+    "id": "BP-015",
+    "component": "ohlcv_row_builder.py → resolve_calendar_for_symbol / partial detection",
+    "severity": "MEDIUM",
+    "issue_description": "For every ticker, resolve_calendar_for_symbol() calls xcals.get_calendar() which may reconstruct the calendar object. Then for the last candle, pd.Timestamp.now(tz=tz) and cal.minute_to_session() are called. With 2,400 tickers, this creates 2,400 calendar resolutions and 2,400 Timestamp objects. exchange_calendars initialization is known to be expensive.",
+    "business_impact": "Adds unnecessary overhead to the OHLCV persistence phase. Currently masked because persist is fast (4s), but will compound as symbol count grows.",
+    "proposed_architecture": "Cache calendar objects in a module-level dict: {exchange: calendar_instance}. Pre-compute now_exchange and current_session ONCE before the loop (they're the same for all US equities in a single run). Pass these as parameters to run_ohlcv_row_builder instead of recomputing per ticker.",
+    "status": "OPEN"
+  },
+  {
+    "id": "BP-016",
+    "component": "main_runner.py → grouped scraping by n_candles",
+    "severity": "MEDIUM",
+    "issue_description": "Symbols are grouped by n_candles and each group is scraped via a separate asyncio.run() call. Each asyncio.run() creates a new event loop, and groups are processed sequentially. If there are 3 groups (e.g., bootstrap=4500, catchup=25, catchup=3), each group must fully complete before the next begins.",
+    "business_impact": "The sequential group processing means the pipeline cannot overlap scraping of different n_candles groups. A small bootstrap group of 10 symbols blocks 2,390 catchup symbols from starting until it completes. Also, calling asyncio.run() multiple times is wasteful — creates/destroys event loops.",
+    "proposed_architecture": "Single asyncio.run() wrapping all groups. Use a unified task queue where workers pull (symbol, n_candles) pairs regardless of group. Each worker processes whatever symbol is next, with the n_candles parameter varying per task. Eliminates group-sequential bottleneck entirely.",
+    "status": "OPEN"
+  },
+  {
+    "id": "BP-017",
+    "component": "tradingview_ws.py → connect_to_tradingview",
+    "severity": "MEDIUM",
+    "issue_description": "No retry logic on WebSocket connection failure. A single connection timeout or handshake failure propagates up as an unrecoverable exception, permanently losing that symbol for the entire run. No exponential backoff, no circuit breaker pattern.",
+    "business_impact": "On flaky networks or during TradingView maintenance, symbol loss compounds. A 2% failure rate on 2,400 symbols means 48 symbols with no data — potentially including high-value tickers. No mechanism to retry failed symbols at the end of the run.",
+    "proposed_architecture": "Implement retry decorator with exponential backoff (3 attempts: 1s, 2s, 4s). Add a failed-symbol retry queue: after the main scrape completes, re-attempt all failed symbols once with fresh connections. Add circuit breaker: if failure rate exceeds 15% in a sliding window, pause all scraping for 30s before resuming.",
+    "status": "OPEN"
+  },
+  {
+    "id": "BP-018",
+    "component": "volatility_runner.py → _compute_volatility_series inner loop",
+    "severity": "MEDIUM",
+    "issue_description": "The any(log_returns[j] is None for j in range(i - window + 1, i + 1)) check iterates up to 252 elements on every row for every window size. This is O(n * sum(windows)) = O(n * 467) with no early termination optimization. Additionally, data is unpacked into 5 separate lists by iterating the source 5 times.",
+    "business_impact": "For 2,400 symbols × 252 rows × 5 windows × 252-max-check, this is ~750 million Python-level comparisons in the worst case. Contributes to the 51.8s volatility computation time.",
+    "proposed_architecture": "Track None positions with a running counter: maintain a 'last_none_index' variable and check (i - last_none_index >= window) in O(1). Use zip(*data) for single-pass unpacking. Or eliminate entirely by switching to pandas where NaN handling is built into rolling operations.",
+    "status": "OPEN"
+  },
+  {
+    "id": "BP-019",
+    "component": "app.py → API query patterns",
+    "severity": "MEDIUM",
+    "issue_description": "Multiple API anti-patterns: (1) SELECT DISTINCT symbol without a covering index forces full table scan on 3.5GB table. (2) ORDER BY ts DESC then rows[::-1] in Python reverses the result in memory instead of using ORDER BY ts ASC with LIMIT subquery. (3) SELECT * used in fundamentals/performance/volatility/volume endpoints instead of explicit columns. (4) Inline __import__('sqlite3').Row instead of importing at module level.",
+    "business_impact": "API response times will degrade as the database grows. The DISTINCT full-scan on /symbols is already slow. Memory copies from list reversal waste RAM under concurrent requests. These patterns will not scale to a revenue-generating API.",
+    "proposed_architecture": "1) Add index on (symbol) alone for DISTINCT queries, or maintain a symbols metadata table. 2) Use ORDER BY ts ASC with LIMIT in a subquery. 3) Explicit column lists in all SELECT statements. 4) Module-level imports. 5) Consider materializing /symbols results with a TTL cache (symbols change at most once per run).",
+    "status": "OPEN"
+  },
+  {
+    "id": "BP-020",
+    "component": "Architecture → end-to-end pipeline design",
+    "severity": "CRITICAL",
+    "issue_description": "The entire pipeline is a monolithic synchronous batch job: scrape ALL → persist ALL → compute ALL → sync ALL. There is no streaming, no incremental processing, no parallelism between phases. A symbol that finishes scraping at t=10s must wait until t=870s (when ALL symbols finish) before its data enters derived metrics computation.",
+    "business_impact": "Fundamentally incompatible with semi-live data. Even with all per-component optimizations, the batch architecture imposes a floor equal to the slowest symbol's scrape time before any downstream processing begins. Prevents real-time alerting, live dashboards, or streaming API updates.",
+    "proposed_architecture": "Streaming pipeline with asyncio: Scraper workers push completed (symbol, data) tuples into an asyncio.Queue. Downstream consumers (persist, derive metrics) pull from the queue and process immediately. A symbol scraped at t=2s has its derived metrics computed and available via API by t=3s, while other symbols are still being scraped. Pattern: producer-consumer with backpressure via bounded queues.",
+    "status": "OPEN"
+  }
+]

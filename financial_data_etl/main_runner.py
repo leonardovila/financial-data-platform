@@ -12,7 +12,6 @@ from financial_data_etl.observability.run_context import RunContext
 import argparse
 from pathlib import Path
 from typing import List, Optional
-from collections import defaultdict
 
 from financial_data_etl.storage.paths import DB_PATH
 
@@ -79,50 +78,26 @@ def main(argv: Optional[List[str]] = None) -> int:
         with ctx.span("increment_plan", symbols=len(symbols), timeframe=timeframe):
             plan = build_increment_plan(symbols, timeframe=timeframe, ctx=ctx)
 
-        total_success = 0
-        total_requested = 0
-        all_batch_data = {}
-
         # -------------------------
-        # 3️⃣ Scrape grouped by n_candles
+        # 3️⃣ Scrape (pool-based, all symbols in one pass)
         # -------------------------
-        grouped = defaultdict(list)
-        for symbol, n in plan.items():
-            grouped[n].append(symbol)
-
         with ctx.span(
             "tv_websocket_scrape",
             timeframe=timeframe,
-            groups=len(grouped),
+            symbols=len(plan),
         ):
-            for n_candles in sorted(grouped.keys()):
-                group_symbols = grouped[n_candles]
-                total_requested += len(group_symbols)
-
-                ctx.event(
-                    "tv_websocket_scrape_group_info",
-                    stage="tv_websocket_scrape",
-                    timeframe=timeframe,
-                    n_candles=n_candles,
-                    symbols=len(group_symbols),
-                )
-
-                batch_data = run_tv_websocket_scraper(
-                    symbols=group_symbols,
-                    timeframe=timeframe,
-                    n_candles=n_candles,
-                    ctx=ctx,
-                    stage="tv_websocket_scrape",
-                )
-
-                all_batch_data.update(batch_data)
-                total_success += len(batch_data)
+            all_batch_data = run_tv_websocket_scraper(
+                plan=plan,
+                timeframe=timeframe,
+                ctx=ctx,
+                stage="tv_websocket_scrape",
+            )
 
             ctx.event(
                 "tv_websocket_scrape_summary",
                 stage="tv_websocket_scrape",
-                symbols_requested=total_requested,
-                symbols_success=total_success,
+                symbols_requested=len(plan),
+                symbols_success=len(all_batch_data),
             )
 
             if not all_batch_data:

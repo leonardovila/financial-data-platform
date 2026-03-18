@@ -92,6 +92,35 @@ async def run_call_executor(spec: CallSpec, ctx, *, stage: str) -> Dict[str, Any
         "body": payload,
     }
 
+async def run_call_executor_pooled(spec: CallSpec, session, ctx, *, stage: str) -> Dict[str, Any]:
+    """
+    Execute a CallSpec using a pre-existing session (for connection pool workers).
+    Does NOT open or close the session — that is the pool's responsibility.
+    """
+    if spec.provider != "tradingview":
+        raise ValueError(f"Proveedor no soportado: {spec.provider}")
+
+    t0 = time.perf_counter()
+    payload = await _execute_tradingview(spec, session)
+    duration = time.perf_counter() - t0
+
+    candles = payload.get("candles", []) if isinstance(payload, dict) else []
+    ctx.event(
+        "ws_response_received",
+        stage=stage,
+        symbol=spec.provider_symbol,
+        candles=len(candles),
+        duration_s=round(duration, 6),
+    )
+
+    return {
+        "provider": spec.provider,
+        "fetched_at": datetime.now().isoformat(),
+        "spec": spec.to_dict(),
+        "body": payload,
+    }
+
+
 async def _execute_tradingview(spec: CallSpec, session) -> Dict[str, Any]:
 
     if spec.mode in ("backfill", "catchup"):
