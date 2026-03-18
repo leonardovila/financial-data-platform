@@ -97,7 +97,8 @@
     "issue_description": "Two compounding issues: (1) Uses bare sqlite3.connect() WITHOUT WAL mode or PRAGMA synchronous — default journal mode with full fsync on every implicit transaction. (2) Executes individual conn.execute(INSERT) in a for-loop instead of executemany(). For 2,400 symbols, that's 2,400 individual INSERT statements.",
     "business_impact": "Currently fast (0.05s) because SQLite batches within the single commit, but under concurrent API load this will cause 'database is locked' errors. As data grows, the unbatched pattern will degrade. Inconsistent with the batched pattern used elsewhere.",
     "proposed_architecture": "1) Add PRAGMA journal_mode=WAL and synchronous=NORMAL. 2) Replace the for-loop with executemany() and a list comprehension to build all values upfront. 3) Use the same _get_connection() pattern from tv_candles_store.py for consistency.",
-    "status": "OPEN"
+    "implemented": "Manual implementation by Leonardo and Gemini: Added _get_connection() to enforce WAL mode and synchronous=NORMAL. Eradicated the iterative conn.execute(INSERT) loop, replacing it with in-memory value collection and a single bulk conn.executemany() transaction.",
+    "status": "CLOSED"
   },
   {
     "id": "BP-011",
@@ -115,7 +116,8 @@
     "issue_description": "Database sync creates a full 3.5GB VACUUM INTO snapshot, then SCPs the ENTIRE file to the remote server. VACUUM INTO rewrites every page of the database. SCP transfers every byte with no delta compression. Historical sync times: 987s, 1,460s (16-24 minutes).",
     "business_impact": "Sync alone can exceed the entire scraping duration. Makes frequent syncs impossible. Blocks the pipeline during VACUUM (exclusive lock on source DB). The 3.5GB transfer burns bandwidth on every run even when only a few MB of data changed.",
     "proposed_architecture": "Option A: rsync with --checksum to transfer only changed blocks (~5-50MB instead of 3.5GB). Option B: Litestream for continuous SQLite replication (real-time streaming of WAL changes). Option C: Dump only changed rows since last sync (SELECT WHERE ingested_at > last_sync_ts) and apply as INSERT on remote. Option D: If sticking with SCP, use zstd compression before transfer (3.5GB → ~500MB).",
-    "status": "OPEN"
+    "implemented": "OBSOLETE. Architectural pivot: The ETL is now designed to run natively on the VPS via cronjob. The local-to-remote DB sync phase has been completely eradicated, saving 100% of the network transfer overhead. Importan note: testing is in local",
+    "status": "CLOSED"
   },
   {
     "id": "BP-013",
@@ -124,7 +126,8 @@
     "issue_description": "Creates an explicit index idx_tv_candles_symbol_tf_ts ON tv_candles_raw(symbol, timeframe, ts) which exactly duplicates the PRIMARY KEY (symbol, timeframe, ts). SQLite automatically creates an internal index for the primary key constraint. This redundant index doubles write amplification on every INSERT/UPDATE.",
     "business_impact": "Every upsert writes to two identical B-trees instead of one. For bootstrap runs inserting millions of rows, this doubles index maintenance overhead. Wastes ~500MB+ of disk space in the 3.5GB database.",
     "proposed_architecture": "Drop the redundant index: DROP INDEX IF EXISTS idx_tv_candles_symbol_tf_ts. The primary key index handles all queries. If additional access patterns emerge (e.g., queries by ts alone), create targeted partial indexes instead.",
-    "status": "OPEN"
+    "implemented": "Manual implementation by Leonardo and Gemini: Removed the explicit CREATE INDEX statement in tv_candles_store.py. The primary key implicitly creates the optimal B-tree, eliminating duplicate write amplification and saving massive disk space.",
+    "status": "CLOSED"
   },
   {
     "id": "BP-014",

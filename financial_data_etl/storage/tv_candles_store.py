@@ -41,11 +41,6 @@ def init_tv_candles_schema() -> None:
             PRIMARY KEY (symbol, timeframe, ts)
         );
         """)
-        conn.execute("""
-        CREATE INDEX IF NOT EXISTS idx_tv_candles_symbol_tf_ts
-        ON tv_candles_raw(symbol, timeframe, ts);
-        """)
-
 
 # ==============================
 # Incremental state
