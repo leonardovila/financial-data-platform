@@ -6,7 +6,6 @@ from financial_data_etl.storage.fundamentals_store import persist_fundamentals_s
 from financial_data_etl.derived_metrics.price_performance.price_performance_runner import run_price_performance_1d
 from financial_data_etl.derived_metrics.volatility.volatility_runner import run_volatility_1d
 from financial_data_etl.derived_metrics.volume.volume_runner import run_volume_1d
-from financial_data_etl.api.sync_db_to_server import run_sync_db_to_server
 from financial_data_etl.observability.run_context import RunContext
 
 import argparse
@@ -39,13 +38,6 @@ def build_cli_parser() -> argparse.ArgumentParser:
         nargs="+",
         metavar="SYMBOL",
         help="Universe: explicit assets list. Example: --assets AAPL MSFT BTCUSDT",
-    )
-
-    # Sincronizar con db en servidor (solo util con credenciales)
-    parser.add_argument(
-        "--sync",
-        action="store_true",
-        help="Sync local DB snapshot to remote server (requires private_config).",
     )
 
     return parser
@@ -145,10 +137,6 @@ def main(argv: Optional[List[str]] = None) -> int:
                     # Esperamos a que terminen y capturamos cualquier error si SQLite se queja
                     for f in concurrent.futures.as_completed(futures):
                         f.result()
-
-        if args.sync:
-            with ctx.span("db_sync"):
-                run_sync_db_to_server(DB_PATH, ctx)
 
         return 0
 
