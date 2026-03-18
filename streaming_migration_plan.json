@@ -1,0 +1,335 @@
+{
+  "plan_id": "BP-020-streaming-migration",
+  "created_at": "2026-03-18",
+  "goal": "Eliminate end-to-end batch wait. Stream micro-batches of ~50 symbols through persist and derived metrics AS scraping continues, so first data is available in ~5s instead of waiting for all 2400 symbols to finish scraping.",
+
+  "architecture_overview": {
+    "current_flow": "scrape ALL 2400 → persist ALL → fundamentals ALL → derive ALL (sequential stages, each waits for previous)",
+    "target_flow": "scrape batch(50) → push to persist_queue → persist batch(50) → push to metrics_queue → derive batch(50) — ALL OVERLAPPING with next batch being scraped",
+    "throughput_model": {
+      "current": "scrape(45s) + persist(4s) + metrics(1.5s) = 50.5s end-to-end",
+      "streaming": "scrape(45s) + pipeline_drain(~2s) = ~47s end-to-end, BUT first 50 symbols have derived metrics by t=7s",
+      "key_win": "First data available in 5-7s instead of 50s. Critical for semi-live API ambition."
+    }
+  },
+
+  "asyncio_structure": {
+    "description": "Single asyncio.run() orchestrating the entire streaming pipeline. Three concurrent layers: producers (scraper pool workers), persist consumer, metrics consumer.",
+    "queues": [
+      {
+        "name": "symbol_queue",
+        "type": "asyncio.Queue",
+        "item_type": "Tuple[str, int]",
+        "item_example": "(\"AAPL\", 3)",
+        "description": "Existing queue. Pool workers pull (symbol, n_candles) pairs from here.",
+        "maxsize": 0,
+        "change": "NO CHANGE"
+      },
+      {
+        "name": "persist_queue",
+        "type": "asyncio.Queue",
+        "item_type": "Dict[str, Dict[str, Any]]",
+        "item_example": "{\"AAPL\": {\"candles\": [...], \"fundamentals\": {...}}, \"MSFT\": {...}} (batch of ~50)",
+        "description": "NEW. Pool workers push completed micro-batch dicts here after fundamentals extraction. Persist consumer reads from this.",
+        "maxsize": 4,
+        "maxsize_rationale": "Backpressure: at most 4 batches (200 symbols) buffered. If persist is slower than scraping, workers naturally block on put()."
+      },
+      {
+        "name": "metrics_queue",
+        "type": "asyncio.Queue",
+        "item_type": "List[str]",
+        "item_example": "[\"AAPL\", \"MSFT\", \"TSLA\", ...] (50 symbol names)",
+        "description": "NEW. Persist consumer pushes symbol name lists here after OHLCV+fundamentals are committed to SQLite. Metrics consumer reads from this.",
+        "maxsize": 4,
+        "maxsize_rationale": "Same backpressure logic. Metrics are fast (~0.3s per batch of 50), so this rarely fills."
+      }
+    ],
+    "coroutines": [
+      {
+        "name": "_pool_worker (MODIFIED)",
+        "role": "producer",
+        "count": "WS_POOL_SIZE (6)",
+        "reads_from": "symbol_queue",
+        "writes_to": "persist_queue",
+        "description": "Same batch multiplexing logic. After request_batch_multiplexed returns and fundamentals are extracted, pushes the processed batch dict to persist_queue instead of (or in addition to) accumulating in shared results dict."
+      },
+      {
+        "name": "_persist_consumer (NEW)",
+        "role": "consumer/producer",
+        "count": 1,
+        "reads_from": "persist_queue",
+        "writes_to": "metrics_queue",
+        "description": "Async coroutine. Loops: pull batch from persist_queue → run persist_ohlcv_base() via run_in_executor (sync SQLite I/O in thread) → run persist_fundamentals_snapshot() via run_in_executor → push symbol list to metrics_queue. Stops when it receives None sentinel.",
+        "threading": "Uses loop.run_in_executor(None, persist_fn, batch, ctx) because persist functions do synchronous SQLite I/O that would block the event loop."
+      },
+      {
+        "name": "_metrics_consumer (NEW)",
+        "role": "consumer",
+        "count": 1,
+        "reads_from": "metrics_queue",
+        "writes_to": null,
+        "description": "Async coroutine. Loops: pull symbol list from metrics_queue → run 3 derived metrics runners in PARALLEL via ThreadPoolExecutor(max_workers=3) → await all 3. Stops when it receives None sentinel.",
+        "threading": "Uses loop.run_in_executor(metrics_executor, runner_fn, symbols, ctx) for each of the 3 runners. The 3 runners execute concurrently in threads (same as current ThreadPoolExecutor pattern in main_runner.py)."
+      }
+    ],
+    "lifecycle": [
+      "1. main_runner calls asyncio.run(_streaming_pipeline(plan, timeframe, ctx))",
+      "2. _streaming_pipeline creates persist_queue and metrics_queue",
+      "3. Launches _persist_consumer and _metrics_consumer as asyncio.create_task()",
+      "4. Launches pool workers (same _run_pool pattern but workers push to persist_queue)",
+      "5. await asyncio.gather(*workers) — all scraping completes",
+      "6. await persist_queue.put(None) — signal persist consumer to stop",
+      "7. await persist_task — persist consumer drains queue and exits",
+      "8. await metrics_queue.put(None) — signal metrics consumer to stop",
+      "9. await metrics_task — metrics consumer drains queue and exits",
+      "10. Return aggregated results and failures"
+    ]
+  },
+
+  "file_changes": [
+    {
+      "file": "financial_data_etl/main_runner.py",
+      "change_type": "MAJOR RESTRUCTURE",
+      "current_signature": "def main(argv: Optional[List[str]] = None) -> int",
+      "new_signature": "def main(argv: Optional[List[str]] = None) -> int (signature unchanged, internals restructured)",
+      "changes": [
+        {
+          "what": "Replace sequential scrape→persist→fundamentals→metrics stages with single streaming pipeline call",
+          "detail": "The 4 sequential ctx.span() blocks (tv_websocket_scrape, ohlcv_persist, fundamentals_persist, derived_metrics) are replaced by a single ctx.span('streaming_pipeline') that calls asyncio.run(_streaming_pipeline(...))",
+          "current_code_lines": "Lines 73-148 (the 4 sequential stages)",
+          "new_structure": "Single call: all_batch_data = asyncio.run(_streaming_pipeline(plan, timeframe, ctx))"
+        },
+        {
+          "what": "Add _streaming_pipeline async function",
+          "detail": "New async function that orchestrates persist_queue, metrics_queue, persist_consumer, metrics_consumer, and pool workers. Returns aggregated results dict.",
+          "new_signature": "async def _streaming_pipeline(plan: dict, timeframe: str, ctx: RunContext) -> dict"
+        },
+        {
+          "what": "Add _persist_consumer async function",
+          "new_signature": "async def _persist_consumer(persist_queue: asyncio.Queue, metrics_queue: asyncio.Queue, ctx: RunContext) -> None",
+          "detail": "Loops: batch = await persist_queue.get() → run_in_executor(persist_ohlcv_base) → run_in_executor(persist_fundamentals_snapshot) → await metrics_queue.put(list(batch.keys())). Exits on None sentinel."
+        },
+        {
+          "what": "Add _metrics_consumer async function",
+          "new_signature": "async def _metrics_consumer(metrics_queue: asyncio.Queue, ctx: RunContext) -> None",
+          "detail": "Loops: symbols = await metrics_queue.get() → run_in_executor(run_price_performance_1d, symbols) + run_in_executor(run_volatility_1d, symbols) + run_in_executor(run_volume_1d, symbols) via asyncio.gather. Exits on None sentinel."
+        },
+        {
+          "what": "Move schema initialization BEFORE streaming pipeline",
+          "detail": "Currently, each derived metrics runner calls init_*_schema() on every invocation. With streaming, they're called ~48 times instead of once. Move init_volatility_schema(), init_performance_schema(), init_volume_schema() to run ONCE before _streaming_pipeline starts.",
+          "rationale": "Idempotent CREATE TABLE IF NOT EXISTS is safe to call once. Saves 47 redundant schema checks."
+        }
+      ]
+    },
+    {
+      "file": "financial_data_etl/scraping_pipeline/tv_websocket_connection/tv_websocket_scraper.py",
+      "change_type": "MODERATE — add persist_queue parameter to worker chain",
+      "changes": [
+        {
+          "what": "Add persist_queue parameter to _pool_worker",
+          "current_signature": "async def _pool_worker(worker_id, queue, catalog, timeframe, ctx, results, failures, stage)",
+          "new_signature": "async def _pool_worker(worker_id, queue, catalog, timeframe, ctx, results, failures, stage, persist_queue)",
+          "detail": "After processing batch_results and extracting fundamentals, push the processed batch dict to persist_queue: await persist_queue.put(batch_processed). ALSO still populate results dict for final count/reconciliation."
+        },
+        {
+          "what": "Add persist_queue parameter to _run_pool",
+          "current_signature": "async def _run_pool(plan, timeframe, catalog, ctx, stage) -> tuple",
+          "new_signature": "async def _run_pool(plan, timeframe, catalog, ctx, stage, persist_queue=None) -> tuple",
+          "detail": "Pass persist_queue through to _pool_worker. When persist_queue is None (backward compat), workers only populate results dict (current behavior)."
+        },
+        {
+          "what": "Add persist_queue parameter to run_tv_websocket_scraper",
+          "current_signature": "def run_tv_websocket_scraper(plan, timeframe, ctx, *, stage) -> dict",
+          "new_signature": "def run_tv_websocket_scraper(plan, timeframe, ctx, *, stage, persist_queue=None) -> dict",
+          "detail": "Pass persist_queue through to _run_pool. Backward compatible: when None, behaves exactly as before."
+        },
+        {
+          "what": "ALTERNATIVE (preferred): expose _run_pool directly to main_runner",
+          "detail": "Since main_runner will call asyncio.run() itself to run the streaming pipeline, it can call _run_pool_streaming directly instead of going through run_tv_websocket_scraper. This avoids the nested asyncio.run() problem (asyncio.run inside asyncio.run is illegal). The scraper module would export _run_pool (renamed to run_pool) as a public async function.",
+          "rationale": "Currently run_tv_websocket_scraper calls asyncio.run(_run_pool(...)). If main_runner also calls asyncio.run(), we can't nest them. The streaming pipeline needs ONE asyncio.run() at the top level."
+        }
+      ],
+      "critical_note": "The nested asyncio.run() problem is the #1 structural challenge. Currently: main_runner (sync) → run_tv_websocket_scraper (sync) → asyncio.run(_run_pool). For streaming: main_runner (sync) → asyncio.run(_streaming_pipeline) where _streaming_pipeline (async) → _run_pool (async) directly. This means run_tv_websocket_scraper's role changes from 'sync wrapper with asyncio.run()' to 'exports an async function that the top-level asyncio.run() calls directly'."
+    },
+    {
+      "file": "financial_data_etl/derived_metrics/volatility/volatility_runner.py",
+      "change_type": "MINOR — skip schema init when called in streaming mode",
+      "current_signature": "def run_volatility_1d(symbols: List[str], ctx=None) -> None",
+      "new_signature": "def run_volatility_1d(symbols: List[str], ctx=None, *, _schema_ready: bool = False) -> None",
+      "changes": [
+        {
+          "what": "Add _schema_ready flag to skip redundant schema init",
+          "detail": "When _schema_ready=True, skip the init_volatility_schema() call at the top. Main_runner calls init once before streaming starts, then passes _schema_ready=True for all micro-batch calls.",
+          "rationale": "Without this, init_volatility_schema() runs ~48 times (once per batch). It's idempotent but wasteful."
+        }
+      ],
+      "no_change_needed": [
+        "SQL bulk read pattern — works identically for 50 or 2400 symbols",
+        "Pandas groupby vectorization — works identically for any N",
+        "Bulk upsert — works identically for any N",
+        "Connection management — creates and closes its own connection per call"
+      ]
+    },
+    {
+      "file": "financial_data_etl/derived_metrics/price_performance/price_performance_runner.py",
+      "change_type": "MINOR — same _schema_ready flag as volatility",
+      "current_signature": "def run_price_performance_1d(symbols: List[str], ctx=None) -> None",
+      "new_signature": "def run_price_performance_1d(symbols: List[str], ctx=None, *, _schema_ready: bool = False) -> None",
+      "changes": [
+        {
+          "what": "Add _schema_ready flag to skip redundant schema init",
+          "detail": "Same pattern as volatility_runner."
+        }
+      ]
+    },
+    {
+      "file": "financial_data_etl/derived_metrics/volume/volume_runner.py",
+      "change_type": "MINOR — same _schema_ready flag as volatility",
+      "current_signature": "def run_volume_1d(symbols: List[str], ctx=None) -> None",
+      "new_signature": "def run_volume_1d(symbols: List[str], ctx=None, *, _schema_ready: bool = False) -> None",
+      "changes": [
+        {
+          "what": "Add _schema_ready flag to skip redundant schema init",
+          "detail": "Same pattern as volatility_runner."
+        }
+      ]
+    },
+    {
+      "file": "financial_data_etl/storage/ohlcv_base_store.py",
+      "change_type": "NO CHANGE",
+      "current_signature": "def persist_ohlcv_base(batch_data: Dict[str, Dict[str, Any]], ctx) -> None",
+      "rationale": "Already accepts batches of any size. Calendar cache is module-level (shared across calls). Works identically for 50 or 2400 symbols."
+    },
+    {
+      "file": "financial_data_etl/storage/fundamentals_store.py",
+      "change_type": "NO CHANGE",
+      "current_signature": "def persist_fundamentals_snapshot(all_batch_data: Dict[str, Dict[str, Any]], ctx: RunContext) -> None",
+      "rationale": "Already accepts batches of any size. Single executemany call. Works identically for 50 or 2400 symbols."
+    },
+    {
+      "file": "financial_data_etl/scraping_pipeline/tv_websocket_connection/call_execution/tradingview_ws.py",
+      "change_type": "NO CHANGE",
+      "rationale": "Batch multiplexing, timeouts, per-session traces — all untouched. The streaming migration is purely orchestration-level."
+    }
+  ],
+
+  "concurrency_safety": {
+    "sqlite_wal": "All connections use PRAGMA journal_mode=WAL. WAL supports concurrent readers with one writer. Multiple micro-batch persists are serialized by the single _persist_consumer coroutine — only one persist call runs at a time.",
+    "persist_serialization": "Critical: _persist_consumer processes batches ONE AT A TIME (sequential await). This means persist_ohlcv_base and persist_fundamentals_snapshot for batch N complete BEFORE batch N+1 starts. No concurrent writes to the same table.",
+    "metrics_parallelism": "Within each micro-batch, the 3 derived metrics run in parallel threads (ThreadPoolExecutor(3)). They READ from tv_candles_raw (concurrent reads OK under WAL) and WRITE to different tables (performance_1d, volatility_1d, volume_1d). No write contention.",
+    "metrics_serialization": "_metrics_consumer processes batches sequentially. Batch N's 3 metrics complete before batch N+1's start. So we never have 6+ concurrent metric threads — always exactly 3 (one per metric type).",
+    "results_dict_safety": "The shared results dict is written by pool workers (asyncio coroutines on the same thread). asyncio is single-threaded — no data races between coroutines. No lock needed.",
+    "context_var_safety": "RunContext.span() uses ContextVar which is safe across threads (each thread gets its own copy). The metrics ThreadPoolExecutor threads each see their own span stack, same as current architecture."
+  },
+
+  "error_handling": {
+    "persist_failure": {
+      "strategy": "Log error via ctx.event, skip the batch (don't push to metrics_queue). Continue processing next batch. The symbols from the failed batch will have OHLCV data in the scraper results but no derived metrics.",
+      "rationale": "A persist failure for one batch should not halt the entire pipeline. The data can be re-derived on the next run."
+    },
+    "metrics_failure": {
+      "strategy": "asyncio.gather(*tasks, return_exceptions=True) — collect exceptions without crashing. Log via ctx.event. Continue processing next batch.",
+      "rationale": "Same as persist failure. Metrics can be re-derived."
+    },
+    "scraper_failure": {
+      "strategy": "Existing requeue logic (MAX_BATCH_RETRIES) is unchanged. Failed symbols go to failures list. Persist consumer never sees them.",
+      "rationale": "No change from current behavior."
+    },
+    "consumer_crash": {
+      "strategy": "Wrap each consumer's while loop body in try/except. On exception, log and continue to next batch. Only exit on None sentinel or fatal error.",
+      "rationale": "One bad batch should not kill the consumer and starve all subsequent batches."
+    }
+  },
+
+  "observability_changes": {
+    "span_structure": {
+      "current": "4 sequential spans: tv_websocket_scrape → ohlcv_persist → fundamentals_persist → derived_metrics",
+      "new": "1 outer span: streaming_pipeline. Inner events track per-batch progress: batch_persisted(batch_n, symbols=50), batch_metrics_done(batch_n, symbols=50). Total duration is the streaming span.",
+      "rationale": "Sequential spans don't make sense when stages overlap. A single span with granular events provides the same visibility."
+    },
+    "events": [
+      "streaming_pipeline_start(total_symbols, pool_size, batch_size)",
+      "batch_persisted(batch_n, symbols, ohlcv_rows, persist_duration_s)",
+      "batch_metrics_done(batch_n, symbols, perf_ok, vol_ok, volume_ok, duration_s)",
+      "streaming_pipeline_done(total_persisted, total_derived, total_duration_s)"
+    ]
+  },
+
+  "migration_steps": [
+    {
+      "step": 1,
+      "description": "Add _schema_ready flag to all 3 derived metrics runners",
+      "risk": "NONE — backward compatible default",
+      "files": ["volatility_runner.py", "price_performance_runner.py", "volume_runner.py"]
+    },
+    {
+      "step": 2,
+      "description": "Export _run_pool as public async function from tv_websocket_scraper.py. Rename to run_pool_async. Keep run_tv_websocket_scraper as backward-compatible sync wrapper.",
+      "risk": "LOW — additive change, existing code path unchanged",
+      "files": ["tv_websocket_scraper.py"]
+    },
+    {
+      "step": 3,
+      "description": "Add persist_queue parameter to _pool_worker and run_pool_async. When persist_queue is not None, push completed batch dicts to it. Always populate results dict for final reconciliation.",
+      "risk": "LOW — None default preserves existing behavior",
+      "files": ["tv_websocket_scraper.py"]
+    },
+    {
+      "step": 4,
+      "description": "Implement _streaming_pipeline, _persist_consumer, and _metrics_consumer in main_runner.py. Wire up the queues and lifecycle.",
+      "risk": "MEDIUM — new orchestration logic, must get shutdown sequence right",
+      "files": ["main_runner.py"]
+    },
+    {
+      "step": 5,
+      "description": "Replace the 4 sequential stages in main() with a single streaming_pipeline call. Update span structure and observability events.",
+      "risk": "MEDIUM — changes the execution model. Must validate with --dji (30 symbols) before full run.",
+      "files": ["main_runner.py"]
+    },
+    {
+      "step": 6,
+      "description": "Test with --dji (30 symbols, 1 batch). Verify: OHLCV persisted, fundamentals persisted, all 3 derived metrics computed, no data loss.",
+      "risk": "NONE — validation step",
+      "files": []
+    },
+    {
+      "step": 7,
+      "description": "Test with --spx (500 symbols, 10 batches). Verify streaming overlap is working: check log timestamps to confirm persist starts before scraping finishes.",
+      "risk": "LOW — larger scale validation",
+      "files": []
+    }
+  ],
+
+  "risks_and_mitigations": [
+    {
+      "risk": "Nested asyncio.run() crash",
+      "description": "main_runner currently calls run_tv_websocket_scraper which calls asyncio.run(). If main_runner also calls asyncio.run() for streaming, we get RuntimeError('cannot be called from a running event loop').",
+      "mitigation": "Step 2 exports run_pool_async as a public async function. The streaming pipeline calls it directly (no nested asyncio.run). run_tv_websocket_scraper (sync wrapper) is kept for backward compat / CLI testing but NOT used in streaming mode.",
+      "severity": "CRITICAL — will crash immediately if not handled"
+    },
+    {
+      "risk": "Derived metrics read stale data",
+      "description": "If metrics_consumer runs before persist_consumer has committed the OHLCV data for that batch, the SQL query will read old data.",
+      "mitigation": "Persist consumer pushes to metrics_queue ONLY AFTER conn.commit() returns. The SQLite WAL guarantees subsequent reads see committed data. The queue ordering guarantees metrics never run before persist completes for that batch.",
+      "severity": "HIGH — would produce wrong results silently"
+    },
+    {
+      "risk": "Backpressure stalls scraping",
+      "description": "If persist_queue fills up (maxsize=4), pool workers block on put(). This pauses scraping, which wastes the WebSocket connections.",
+      "mitigation": "Persist is fast (~0.08s per batch of 50). Scraping is slow (~5s per batch). The queue will never fill up in practice. maxsize=4 is conservative safety net. If it does fill, blocking is the correct behavior (backpressure).",
+      "severity": "LOW — self-correcting"
+    },
+    {
+      "risk": "Consumer crash orphans remaining batches",
+      "description": "If _persist_consumer crashes, no more batches get persisted. Pool workers keep scraping and pushing to the queue until it fills, then block forever.",
+      "mitigation": "Wrap consumer loop body in try/except. On per-batch failure, log and continue. For true crashes (memory, segfault), the entire asyncio.run() fails and main() catches it.",
+      "severity": "MEDIUM"
+    },
+    {
+      "risk": "Observability regression",
+      "description": "Current report has clean sequential stage durations. Streaming blurs stage boundaries.",
+      "mitigation": "Single streaming_pipeline span with per-batch events. Report includes: first_batch_persisted_at, last_batch_derived_at, total_duration. Users can still compute effective persist and metrics throughput from the events.",
+      "severity": "LOW — cosmetic"
+    }
+  ]
+}

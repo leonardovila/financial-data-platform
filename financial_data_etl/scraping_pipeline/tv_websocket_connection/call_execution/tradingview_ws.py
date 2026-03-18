@@ -300,3 +300,206 @@ async def cleanup_chart_and_quote(session: Dict[str, Any]) -> None:
         await send_to_tradingview(ws, {"m": "quote_delete_session", "p": [quote_id]}, trace_file)
     except Exception:
         pass
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# BATCH MULTIPLEXING: N symbols over 1 WebSocket
+#
+# Architecture:
+#   1. Fire 6 × N send commands (3 chart + 3 quote per symbol), all upfront
+#   2. Single receive loop routes messages by session ID in p[0]
+#   3. Each symbol tracked independently (ohlcv_done + quote_done)
+#   4. Loop exits when ALL symbols complete, or on deadline/timeout
+#   5. Returns partial results on timeout (completed = success, rest = failure)
+# ──────────────────────────────────────────────────────────────────────────────
+
+BATCH_TIMEOUT = 90  # seconds for entire batch of N symbols
+
+_QUOTE_FIELDS = [
+    "market_cap_basic",
+    "market_cap_calc",
+    "total_shares_outstanding_current",
+    "total_shares_outstanding_calculated",
+    "price_earnings_ttm",
+    "earnings_per_share_basic_ttm",
+    "industry",
+    "sector",
+]
+
+
+async def request_batch_multiplexed(
+    session: Dict[str, Any],
+    batch_items: list,
+) -> tuple:
+    """
+    Multiplexed multi-symbol request over a single WebSocket connection.
+
+    Args:
+        session: open WS session from open_session()
+        batch_items: list of dicts, each with keys:
+            provider_symbol, chart_id, quote_id, timeframe, n_candles
+
+    Returns:
+        (successes, failures) where:
+        - successes: {provider_symbol: body_dict}
+        - failures: [provider_symbol, ...]
+    """
+    ws = session["ws"]
+    trace_file = session.get("trace_file")
+
+    # ── PER-SYMBOL STATE + ROUTING TABLES ──
+    states: Dict[str, Dict[str, Any]] = {}
+    chart_route: Dict[str, Dict[str, Any]] = {}
+    quote_route: Dict[str, Dict[str, Any]] = {}
+
+    for bi in batch_items:
+        state = {
+            "provider_symbol": bi["provider_symbol"],
+            "timeframe": bi["timeframe"],
+            "ohlcv_payload": None,
+            "company_name": None,
+            "quote_snapshot": {},
+            "ohlcv_done": False,
+            "quote_done": False,
+        }
+        states[bi["provider_symbol"]] = state
+        chart_route[bi["chart_id"]] = state
+        quote_route[bi["quote_id"]] = state
+
+    # ── FIRE ALL SENDS UPFRONT (N×6 messages) ──
+    for bi in batch_items:
+        cid = bi["chart_id"]
+        qid = bi["quote_id"]
+        sym = bi["provider_symbol"]
+        tf_tv = _TF_ALIAS_FOR_TV.get(bi["timeframe"], bi["timeframe"].upper())
+        n = bi["n_candles"]
+
+        # Chart (OHLCV) — 3 sends
+        await send_to_tradingview(ws, {"m": "chart_create_session", "p": [cid]}, trace_file)
+        await send_to_tradingview(ws, {"m": "resolve_symbol", "p": [cid, "s1", sym]}, trace_file)
+        await send_to_tradingview(ws, {
+            "m": "create_series",
+            "p": [cid, "sds_1", "s1", "s1", tf_tv, n, ""],
+        }, trace_file)
+
+        # Quote (Fundamentals) — 3 sends
+        await send_to_tradingview(ws, {"m": "quote_create_session", "p": [qid]}, trace_file)
+        await send_to_tradingview(ws, {
+            "m": "quote_set_fields",
+            "p": [qid] + _QUOTE_FIELDS,
+        }, trace_file)
+        await send_to_tradingview(ws, {
+            "m": "quote_add_symbols",
+            "p": [
+                qid,
+                f"={{\"adjustment\":\"splits\",\"currency-id\":\"USD\",\"symbol\":\"{sym}\"}}",
+            ],
+        }, trace_file)
+
+    # ── UNIFIED RECEIVE LOOP WITH DEADLINE ──
+    pending = len(batch_items)
+    loop = asyncio.get_event_loop()
+    deadline = loop.time() + BATCH_TIMEOUT
+
+    while pending > 0:
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            break
+
+        try:
+            message = await asyncio.wait_for(
+                ws.recv(), timeout=min(RECV_TIMEOUT, remaining)
+            )
+        except asyncio.TimeoutError:
+            break
+
+        if trace_file:
+            trace_file.write("RECEIVE RAW:\n")
+            trace_file.write(message + "\n\n")
+
+        for chunk in re.split(r"~m~\d+~m~", message)[1:]:
+            if not chunk.strip():
+                continue
+            try:
+                payload = json.loads(chunk)
+            except json.JSONDecodeError:
+                continue
+
+            mtype = payload.get("m")
+            p = payload.get("p", [])
+            sid = p[0] if p else None
+
+            # ── OHLCV responses (routed by chart_id) ──
+            if mtype == "symbol_resolved" and sid in chart_route:
+                state = chart_route[sid]
+                if len(p) >= 3 and isinstance(p[2], dict):
+                    state["company_name"] = (
+                        p[2].get("local_description") or p[2].get("description")
+                    )
+
+            elif mtype == "timescale_update" and sid in chart_route:
+                state = chart_route[sid]
+                if not state["ohlcv_done"]:
+                    state["ohlcv_payload"] = payload
+                    state["ohlcv_done"] = True
+                    if trace_file:
+                        trace_file.write(
+                            f"TIMESCALE_UPDATE for {state['provider_symbol']}\n\n"
+                        )
+                    if state["quote_done"]:
+                        pending -= 1
+
+            # ── Quote/Fundamentals responses (routed by quote_id) ──
+            elif mtype == "qsd" and sid in quote_route:
+                state = quote_route[sid]
+                if len(p) >= 2 and isinstance(p[1], dict):
+                    v = p[1].get("v")
+                    if isinstance(v, dict):
+                        state["quote_snapshot"].update(v)
+
+            elif mtype == "quote_completed" and sid in quote_route:
+                state = quote_route[sid]
+                if not state["quote_done"]:
+                    state["quote_done"] = True
+                    if state["ohlcv_done"]:
+                        pending -= 1
+
+    # ── BUILD RESULTS ──
+    successes: Dict[str, Dict[str, Any]] = {}
+    failures: list = []
+
+    for sym, state in states.items():
+        if state["ohlcv_done"] and state["quote_done"] and state["ohlcv_payload"]:
+            candles = parse_ohlcv(state["ohlcv_payload"])
+            successes[sym] = {
+                "symbol": sym,
+                "timeframe": state["timeframe"],
+                "candles": candles,
+                "fundamentals_raw": state["quote_snapshot"],
+                "company_name": state["company_name"],
+            }
+        else:
+            failures.append(sym)
+
+    return successes, failures
+
+
+async def cleanup_batch_sessions(
+    session: Dict[str, Any], batch_items: list
+) -> None:
+    """Delete all chart/quote sessions from a batch (fire-and-forget sends)."""
+    ws = session["ws"]
+    trace_file = session.get("trace_file")
+    for bi in batch_items:
+        try:
+            await send_to_tradingview(
+                ws, {"m": "chart_delete_session", "p": [bi["chart_id"]]}, trace_file
+            )
+        except Exception:
+            pass
+        try:
+            await send_to_tradingview(
+                ws, {"m": "quote_delete_session", "p": [bi["quote_id"]]}, trace_file
+            )
+        except Exception:
+            pass

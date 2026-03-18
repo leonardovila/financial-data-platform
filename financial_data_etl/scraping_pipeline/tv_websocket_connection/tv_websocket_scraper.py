@@ -1,23 +1,25 @@
 """
-Pool-based TradingView WebSocket scraper.
+Pool-based TradingView WebSocket scraper with batch multiplexing.
 
 Architecture:
   - An asyncio.Queue holds (symbol, n_candles) work items.
-  - N persistent workers each open ONE WebSocket connection and drain
-    symbols from the queue, reusing the connection across symbols.
-  - Unique chart/quote session IDs per symbol prevent server-side collisions.
-  - Explicit session cleanup between symbols allows connection reuse.
-  - On connection death: reconnect and retry the failed symbol.
+  - N persistent workers (WS_POOL_SIZE) each open ONE WebSocket connection.
+  - Each worker pulls SYMBOLS_PER_BATCH items from the queue at once.
+  - All symbols in the batch are fired concurrently over the SINGLE connection
+    using unique chart/quote session IDs per symbol.
+  - A unified receive loop routes the chaotic incoming stream back to the
+    correct symbol by matching session IDs in p[0].
+  - 6 connections × 50 symbols/batch = 300 symbols in-flight simultaneously.
 """
 
 from financial_data_etl.scraping_pipeline.tv_websocket_connection.call_specification.call_builder import run_call_builder
 from financial_data_etl.scraping_pipeline.tv_websocket_connection.call_specification.asset_catalog import load_assets_catalog
-from financial_data_etl.scraping_pipeline.tv_websocket_connection.call_execution.call_executor import run_call_executor_pooled
 from financial_data_etl.scraping_pipeline.fundamentals.fundamentals_extractor import extract_fundamentals_from_quote_raw
 from financial_data_etl.scraping_pipeline.tv_websocket_connection.call_execution.tradingview_ws import (
     open_session,
     close_session,
-    cleanup_chart_and_quote,
+    request_batch_multiplexed,
+    cleanup_batch_sessions,
     close_global_ws_trace,
 )
 from financial_data_etl.observability.run_context import RunContext
@@ -28,8 +30,9 @@ import websockets
 
 # ----------- CONFIG -----------
 WS_POOL_SIZE: int = int(os.environ.get("WS_POOL_SIZE", "20"))
+SYMBOLS_PER_BATCH: int = int(os.environ.get("SYMBOLS_PER_BATCH", "50"))
 PROVIDER = "tradingview"
-MAX_RETRIES_PER_SYMBOL = 2
+MAX_BATCH_RETRIES = 3  # max reconnections per worker before giving up on requeuing
 # -------------------------------------------
 
 
@@ -44,37 +47,41 @@ async def _pool_worker(
     stage: str,
 ):
     """
-    Persistent worker: opens ONE WebSocket session, pulls symbols from queue,
-    processes each without closing the connection. Reconnects on failure.
+    Persistent worker: opens ONE WebSocket, pulls batches of up to
+    SYMBOLS_PER_BATCH symbols, fires them ALL concurrently over the
+    single connection, collects results via session-ID routing.
     """
     session = None
     base_chart_id = None
     counter = 0
+    reconnect_count = 0
 
     while True:
-        try:
-            symbol, n_candles = queue.get_nowait()
-        except asyncio.QueueEmpty:
+        # ── PULL BATCH FROM QUEUE ──
+        batch = []
+        while len(batch) < SYMBOLS_PER_BATCH:
+            try:
+                batch.append(queue.get_nowait())
+            except asyncio.QueueEmpty:
+                break
+
+        if not batch:
             break
 
-        success = False
-        last_error = None
+        batch_specs = []
 
-        for attempt in range(MAX_RETRIES_PER_SYMBOL + 1):
-            try:
-                # Open / reconnect session if needed
-                if session is None:
-                    session = await open_session()
-                    base_chart_id = session["chart_id"]
-                    counter = 0
+        try:
+            # ── OPEN / RECONNECT ──
+            if session is None:
+                session = await open_session()
+                base_chart_id = session["chart_id"]
+                counter = 0
 
-                # Unique session IDs for this symbol (prevent server-side collisions)
+            # ── BUILD BATCH SPECS WITH UNIQUE SESSION IDs ──
+            sym_map = {}  # provider_symbol -> original symbol
+
+            for symbol, n_candles in batch:
                 counter += 1
-                session["chart_id"] = f"{base_chart_id}_{counter}"
-                session["quote_id"] = f"qs_w{worker_id}_{counter}"
-
-                ctx.event("symbol_scrape_start", stage=stage, symbol=symbol, worker=worker_id)
-
                 spec = run_call_builder(
                     symbol=symbol,
                     timeframe=timeframe,
@@ -83,45 +90,133 @@ async def _pool_worker(
                     n_candles_hint=n_candles,
                     catalog=catalog,
                 )
+                batch_specs.append({
+                    "provider_symbol": spec.provider_symbol,
+                    "chart_id": f"{base_chart_id}_{counter}",
+                    "quote_id": f"qs_w{worker_id}_{counter}",
+                    "timeframe": timeframe,
+                    "n_candles": n_candles,
+                })
+                sym_map[spec.provider_symbol] = symbol
 
-                raw = await run_call_executor_pooled(spec, session, ctx, stage=stage)
-                body = raw["body"]
-                candles = body.get("candles", [])
+            ctx.event(
+                "batch_scrape_start",
+                stage=stage,
+                worker=worker_id,
+                batch_size=len(batch_specs),
+            )
+
+            # ── EXECUTE MULTIPLEXED BATCH ──
+            batch_results, batch_fails = await request_batch_multiplexed(
+                session, batch_specs
+            )
+
+            # ── PROCESS RESULTS ──
+            for prov_sym, body in batch_results.items():
+                orig = sym_map[prov_sym]
                 fundamentals_raw = body.get("fundamentals_raw")
                 fundamentals = extract_fundamentals_from_quote_raw(fundamentals_raw)
-
+                results[orig] = {**body, "fundamentals": fundamentals}
                 ctx.event(
                     "symbol_scrape_success",
                     stage=stage,
-                    symbol=symbol,
-                    candles=len(candles),
+                    symbol=orig,
+                    candles=len(body.get("candles", [])),
                     worker=worker_id,
                 )
 
-                results[symbol] = {**body, "fundamentals": fundamentals}
-                success = True
-
-                # Cleanup chart/quote sessions so next symbol can reuse the connection
-                await cleanup_chart_and_quote(session)
-                break  # success, exit retry loop
-
-            except (
-                websockets.ConnectionClosed,
-                websockets.ConnectionClosedError,
-                ConnectionError,
-                OSError,
-            ) as e:
-                # Connection died — close, nullify, retry with fresh connection
-                last_error = e
+            for prov_sym in batch_fails:
+                orig = sym_map.get(prov_sym, prov_sym)
+                failures.append(orig)
                 ctx.event(
-                    "ws_connection_lost",
+                    "symbol_scrape_error",
                     stage=stage,
-                    symbol=symbol,
+                    symbol=orig,
+                    error="batch_incomplete",
                     worker=worker_id,
-                    attempt=attempt + 1,
-                    error=str(e),
-                    level="WARNING",
                 )
+
+            ctx.event(
+                "batch_scrape_done",
+                stage=stage,
+                worker=worker_id,
+                success=len(batch_results),
+                failed=len(batch_fails),
+            )
+
+            # ── CLEANUP ALL SESSIONS FROM THIS BATCH ──
+            await cleanup_batch_sessions(session, batch_specs)
+
+        except (
+            websockets.ConnectionClosed,
+            websockets.ConnectionClosedError,
+            ConnectionError,
+            OSError,
+            asyncio.TimeoutError,
+        ) as e:
+            # Connection died or timed out — close, will reconnect on next iteration
+            ctx.event(
+                "ws_connection_lost",
+                stage=stage,
+                worker=worker_id,
+                error=str(e),
+                batch_size=len(batch),
+                level="WARNING",
+            )
+            try:
+                if session:
+                    await close_session(session)
+            except Exception:
+                pass
+            session = None
+            reconnect_count += 1
+
+            # Identify which symbols did NOT complete in this batch
+            incomplete = [(sym, nc) for sym, nc in batch if sym not in results]
+
+            if reconnect_count <= MAX_BATCH_RETRIES and incomplete:
+                # Requeue for retry — this worker (or another) will pick them up
+                for item in incomplete:
+                    await queue.put(item)
+                ctx.event(
+                    "batch_requeued",
+                    stage=stage,
+                    worker=worker_id,
+                    requeued=len(incomplete),
+                    reconnect_count=reconnect_count,
+                )
+            else:
+                # Exceeded retry limit — permanent failures
+                for sym, _ in incomplete:
+                    failures.append(sym)
+                ctx.event(
+                    "batch_symbols_lost",
+                    stage=stage,
+                    worker=worker_id,
+                    lost=len(incomplete),
+                    reconnect_count=reconnect_count,
+                    level="ERROR",
+                )
+
+        except Exception as e:
+            ctx.event(
+                "batch_scrape_error",
+                stage=stage,
+                worker=worker_id,
+                error=str(e),
+                level="ERROR",
+            )
+
+            # Mark un-completed symbols as failed
+            for symbol, _ in batch:
+                if symbol not in results:
+                    failures.append(symbol)
+
+            # Try cleanup; if that fails, force reconnect
+            try:
+                if session and batch_specs:
+                    await cleanup_batch_sessions(session, batch_specs)
+            except Exception:
                 try:
                     if session:
                         await close_session(session)
@@ -129,33 +224,8 @@ async def _pool_worker(
                     pass
                 session = None
 
-            except Exception as e:
-                # Non-connection error (parse error, unknown symbol, etc.)
-                last_error = e
-                # Try to cleanup so connection stays usable
-                try:
-                    if session:
-                        await cleanup_chart_and_quote(session)
-                except Exception:
-                    try:
-                        if session:
-                            await close_session(session)
-                    except Exception:
-                        pass
-                    session = None
-                break  # don't retry non-connection errors
-
-        if not success:
-            ctx.event(
-                "symbol_scrape_error",
-                stage=stage,
-                symbol=symbol,
-                error=str(last_error),
-                worker=worker_id,
-            )
-            failures.append(symbol)
-
-        queue.task_done()
+        for _ in batch:
+            queue.task_done()
 
     # Worker done — close its persistent session
     if session:
@@ -190,7 +260,12 @@ async def _run_pool(
     ]
 
     await asyncio.gather(*workers)
-    return results, failures
+
+    # Reconcile: a symbol may appear in failures from a first attempt
+    # but succeed on retry. Remove any failure that ended up in results.
+    reconciled_failures = [s for s in failures if s not in results]
+
+    return results, reconciled_failures
 
 
 def run_tv_websocket_scraper(
@@ -201,10 +276,13 @@ def run_tv_websocket_scraper(
     stage: str,
 ) -> dict:
     """
-    Pool-based scraper: persistent WS connections drain a symbol queue.
+    Pool-based scraper with batch multiplexing.
+
+    Each of WS_POOL_SIZE workers opens ONE connection and fires
+    SYMBOLS_PER_BATCH symbols concurrently per batch cycle.
 
     Args:
-        plan: {symbol: n_candles} — each symbol with its own candle count.
+        plan: {symbol: n_candles}
         timeframe: e.g. "1d"
         ctx: RunContext for observability.
         stage: stage name for logging.
@@ -218,6 +296,7 @@ def run_tv_websocket_scraper(
         symbols=len(plan),
         timeframe=timeframe,
         pool_size=WS_POOL_SIZE,
+        batch_size=SYMBOLS_PER_BATCH,
     )
 
     catalog = load_assets_catalog()
@@ -241,6 +320,7 @@ def run_tv_websocket_scraper(
         failed_symbols=failures[:50] if failures else None,
         total_candles=total_candles,
         pool_size=WS_POOL_SIZE,
+        batch_size=SYMBOLS_PER_BATCH,
     )
 
     return results
