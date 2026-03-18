@@ -124,6 +124,18 @@ class RunContext:
             raise
         finally:
             dt = time.perf_counter() - t0
+            
+            # Guardamos la métrica en el reporte JSON (arregla el reporte vacío)
+            if "stages" not in self.report:
+                self.report["stages"] = {}
+                
+            self.report["stages"][stage] = {
+                "status": status,
+                "duration_s": round(dt, 6),
+                "parent_stage": parent_stage,
+                **kwargs
+            }
+
             if status == "ok":
                 self.event(
                     "stage_ok", 

@@ -107,7 +107,8 @@
     "issue_description": "The FastAPI application's database layer is 6 lines of bare sqlite3.connect() with zero configuration. No WAL mode, no synchronous pragma, no connection pooling, no query timeout. Every API request opens a raw connection in default DELETE journal mode.",
     "business_impact": "Under concurrent API requests, readers will block on ETL writers (and vice versa). 'database is locked' errors will occur under any meaningful load. Incompatible with the semi-live API ambition. No connection reuse means repeated file-open overhead per request.",
     "proposed_architecture": "1) Add WAL + synchronous=NORMAL to get_connection(). 2) Implement connection pooling (e.g., a simple queue of pre-configured connections, or use aiosqlite for async FastAPI). 3) Add PRAGMA busy_timeout=5000 to wait instead of failing on lock contention. 4) Consider read-only connections for GET endpoints (PRAGMA query_only=ON).",
-    "status": "OPEN"
+    "implemented": "get_connection() now executes PRAGMA journal_mode=WAL, PRAGMA synchronous=NORMAL, and PRAGMA busy_timeout=5000 on every connection. WAL enables concurrent readers during ETL writes. busy_timeout=5000ms causes SQLite to wait on contention instead of raising 'database is locked'. synchronous=NORMAL reduces fsync overhead while remaining safe under WAL.",
+    "status": "CLOSED"
   },
   {
     "id": "BP-012",
@@ -146,7 +147,8 @@
     "issue_description": "For every ticker, resolve_calendar_for_symbol() calls xcals.get_calendar() which may reconstruct the calendar object. Then for the last candle, pd.Timestamp.now(tz=tz) and cal.minute_to_session() are called. With 2,400 tickers, this creates 2,400 calendar resolutions and 2,400 Timestamp objects. exchange_calendars initialization is known to be expensive.",
     "business_impact": "Adds unnecessary overhead to the OHLCV persistence phase. Currently masked because persist is fast (4s), but will compound as symbol count grows.",
     "proposed_architecture": "Cache calendar objects in a module-level dict: {exchange: calendar_instance}. Pre-compute now_exchange and current_session ONCE before the loop (they're the same for all US equities in a single run). Pass these as parameters to run_ohlcv_row_builder instead of recomputing per ticker.",
-    "status": "OPEN"
+    "implemented": "Module-level _CALENDAR_CACHE dict maps {exchange_code: calendar_instance}. resolve_calendar_for_symbol() now calls _get_calendar() which instantiates once per exchange. New precompute_session_context(cal) computes now_exchange, current_session, and session_close ONCE. ohlcv_base_store.py passes the pre-computed session_ctx to run_ohlcv_row_builder for every symbol. Per-exchange contexts are also cached (_session_ctx_cache) to handle QNC(XTSE) and SGLN/URNU(XLON) correctly. 2,400 calendar instantiations → max 3 (one per exchange).",
+    "status": "CLOSED"
   },
   {
     "id": "BP-016",
@@ -185,7 +187,8 @@
     "issue_description": "Multiple API anti-patterns: (1) SELECT DISTINCT symbol without a covering index forces full table scan on 3.5GB table. (2) ORDER BY ts DESC then rows[::-1] in Python reverses the result in memory instead of using ORDER BY ts ASC with LIMIT subquery. (3) SELECT * used in fundamentals/performance/volatility/volume endpoints instead of explicit columns. (4) Inline __import__('sqlite3').Row instead of importing at module level.",
     "business_impact": "API response times will degrade as the database grows. The DISTINCT full-scan on /symbols is already slow. Memory copies from list reversal waste RAM under concurrent requests. These patterns will not scale to a revenue-generating API.",
     "proposed_architecture": "1) Add index on (symbol) alone for DISTINCT queries, or maintain a symbols metadata table. 2) Use ORDER BY ts ASC with LIMIT in a subquery. 3) Explicit column lists in all SELECT statements. 4) Module-level imports. 5) Consider materializing /symbols results with a TTL cache (symbols change at most once per run).",
-    "status": "OPEN"
+    "implemented": "All 5 anti-patterns eradicated: (1) /symbols now served from in-memory TTL cache (_SYMBOLS_TTL=300s) — full-scan executes at most once per 5 minutes instead of per-request. (2) /ohlcv/history reversed in SQL via subquery: SELECT FROM (SELECT ... ORDER BY ts DESC LIMIT ?) ORDER BY ts ASC — eliminates Python rows[::-1] memory copy. (3) All 5 endpoints now use explicit column names in SELECT. (4) sqlite3 imported at module level — inline __import__('sqlite3') and dynamic 'import sqlite3' eradicated. (5) conn.row_factory = sqlite3.Row set cleanly using the module-level import.",
+    "status": "CLOSED"
   },
   {
     "id": "BP-020",

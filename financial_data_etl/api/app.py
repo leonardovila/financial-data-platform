@@ -1,3 +1,5 @@
+import sqlite3
+import time
 from fastapi import FastAPI
 from financial_data_etl.api.db import get_connection
 from fastapi.middleware.cors import CORSMiddleware
@@ -10,20 +12,36 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ── TTL cache for /symbols (symbols change at most once per ETL run) ──
+_symbols_cache: list | None = None
+_symbols_cache_ts: float = 0.0
+_SYMBOLS_TTL = 300  # 5 minutes
+
+
 @app.get("/")
 def root():
     return {"status": "api ok"}
 
+
 @app.get("/symbols")
 def get_symbols():
+    global _symbols_cache, _symbols_cache_ts
+
+    now = time.monotonic()
+    if _symbols_cache is not None and (now - _symbols_cache_ts) < _SYMBOLS_TTL:
+        return _symbols_cache
+
     conn = get_connection()
     try:
         rows = conn.execute(
             "SELECT DISTINCT symbol FROM tv_candles_raw ORDER BY symbol"
         ).fetchall()
-        return [r[0] for r in rows]
+        _symbols_cache = [r[0] for r in rows]
+        _symbols_cache_ts = now
+        return _symbols_cache
     finally:
         conn.close()
+
 
 @app.get("/ohlcv/history/{symbol}")
 def get_ohlcv_history(symbol: str, limit: int = 4500):
@@ -31,8 +49,6 @@ def get_ohlcv_history(symbol: str, limit: int = 4500):
     Returns historical OHLCV candles for a given symbol.
     Max 4500 rows. Default timeframe: 1d.
     """
-
-    # Hard cap
     limit = min(limit, 4500)
 
     conn = get_connection()
@@ -40,22 +56,23 @@ def get_ohlcv_history(symbol: str, limit: int = 4500):
         rows = conn.execute(
             """
             SELECT ts, open, high, low, close, volume
-            FROM tv_candles_raw
-            WHERE symbol = ?
-              AND timeframe = '1d'
-              AND is_partial = 0
-            ORDER BY ts DESC
-            LIMIT ?
+            FROM (
+                SELECT ts, open, high, low, close, volume
+                FROM tv_candles_raw
+                WHERE symbol = ?
+                  AND timeframe = '1d'
+                  AND is_partial = 0
+                ORDER BY ts DESC
+                LIMIT ?
+            )
+            ORDER BY ts ASC
             """,
             (symbol.upper(), limit),
         ).fetchall()
 
-        # Reverse to ascending time for chart consumption
-        rows = rows[::-1]
-
         return [
             {
-                "time": r[0],     # unix timestamp (seconds)
+                "time": r[0],
                 "open": r[1],
                 "high": r[2],
                 "low": r[3],
@@ -68,16 +85,17 @@ def get_ohlcv_history(symbol: str, limit: int = 4500):
     finally:
         conn.close()
 
+
 @app.get("/fundamentals/{symbol}")
 def get_latest_fundamentals(symbol: str):
     conn = get_connection()
     try:
-        # SQLite rows accesibles por nombre
-        conn.row_factory = __import__("sqlite3").Row
+        conn.row_factory = sqlite3.Row
 
         row = conn.execute(
             """
-            SELECT *
+            SELECT symbol, as_of_ts, company_name, market_cap,
+                   pe_ttm, eps_ttm, shares_outstanding, sector, industry
             FROM fundamentals_snapshot
             WHERE symbol = ?
             ORDER BY as_of_ts DESC
@@ -103,16 +121,16 @@ def get_latest_fundamentals(symbol: str):
     finally:
         conn.close()
 
+
 @app.get("/performance/1d/{symbol}")
 def get_latest_performance_1d(symbol: str):
     conn = get_connection()
     try:
-        import sqlite3
         conn.row_factory = sqlite3.Row
 
         row = conn.execute(
             """
-            SELECT *
+            SELECT symbol, ts, ret_1d, ret_1w, ret_1m, ret_3m, ret_6m, ret_1y, computed_at
             FROM performance_1d
             WHERE symbol = ?
               AND is_partial = 0
@@ -140,16 +158,16 @@ def get_latest_performance_1d(symbol: str):
     finally:
         conn.close()
 
+
 @app.get("/volatility/1d/{symbol}")
 def get_latest_volatility_1d(symbol: str):
     conn = get_connection()
     try:
-        import sqlite3
         conn.row_factory = sqlite3.Row
 
         row = conn.execute(
             """
-            SELECT *
+            SELECT symbol, ts, range_intraday, vol_1w, vol_1m, vol_3m, vol_6m, vol_1y, computed_at
             FROM volatility_1d
             WHERE symbol = ?
               AND is_partial = 0
@@ -177,16 +195,17 @@ def get_latest_volatility_1d(symbol: str):
     finally:
         conn.close()
 
+
 @app.get("/volume/1d/{symbol}")
 def get_latest_volume_1d(symbol: str):
     conn = get_connection()
     try:
-        import sqlite3
         conn.row_factory = sqlite3.Row
 
         row = conn.execute(
             """
-            SELECT *
+            SELECT symbol, ts, volume_usd, vol_sma_20, vol_sma_50, vol_sma_100, vol_sma_200,
+                   vol_gap_20, vol_gap_50, vol_gap_100, vol_gap_200
             FROM volume_1d
             WHERE symbol = ?
               AND is_partial = 0

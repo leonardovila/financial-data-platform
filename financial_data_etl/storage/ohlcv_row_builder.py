@@ -1,25 +1,71 @@
 from __future__ import annotations
-from typing import List, Dict
+from typing import List, Dict, Optional
 import time
 import exchange_calendars as xcals
 import pandas as pd
 
-def resolve_calendar_for_symbol(symbol: str):
+# ── Module-level calendar cache: {exchange_code: calendar_instance} ──
+_CALENDAR_CACHE: Dict[str, xcals.ExchangeCalendar] = {}
+
+
+def _get_calendar(exchange: str) -> xcals.ExchangeCalendar:
+    """Return a cached calendar instance. Instantiate once per exchange."""
+    if exchange not in _CALENDAR_CACHE:
+        _CALENDAR_CACHE[exchange] = xcals.get_calendar(exchange)
+    return _CALENDAR_CACHE[exchange]
+
+
+def resolve_calendar_for_symbol(symbol: str) -> xcals.ExchangeCalendar:
     if symbol == "QNC":
-        return xcals.get_calendar("XTSE")
-
+        return _get_calendar("XTSE")
     if symbol in ("SGLN", "URNU"):
-        return xcals.get_calendar("XLON")
+        return _get_calendar("XLON")
+    return _get_calendar("XNYS")
 
-    return xcals.get_calendar("XNYS")
 
-def run_ohlcv_row_builder(ticker: str, body: Dict, ctx=None) -> List[Dict]:
+def precompute_session_context(cal: xcals.ExchangeCalendar):
+    """
+    Pre-compute now_exchange, current_session, and session_close ONCE per run.
+    Returns a dict to be passed to run_ohlcv_row_builder for all symbols sharing this calendar.
+    """
+    tz = cal.tz
+    now_exchange = pd.Timestamp.now(tz=tz)
+
+    try:
+        current_session = cal.minute_to_session(now_exchange, direction="previous")
+    except Exception:
+        try:
+            current_session = cal.date_to_session(now_exchange.date(), direction="previous")
+        except Exception:
+            current_session = None
+
+    session_close = None
+    if current_session is not None:
+        session_close = cal.session_close(current_session)
+
+    return {
+        "now_exchange": now_exchange,
+        "current_session": current_session,
+        "session_close": session_close,
+        "cal": cal,
+    }
+
+
+def run_ohlcv_row_builder(
+    ticker: str,
+    body: Dict,
+    ctx=None,
+    *,
+    session_ctx: Optional[Dict] = None,
+) -> List[Dict]:
     """
     Construye filas OHLCV normalizadas.
     Determina is_partial usando calendario oficial del exchange para 1D.
-    """
-    cal = resolve_calendar_for_symbol(ticker)
 
+    Args:
+        session_ctx: Pre-computed session context from precompute_session_context().
+                     If None, falls back to per-symbol computation (backward compat).
+    """
     out: List[Dict] = []
     timeframe = body.get("timeframe", "")
     now_ts = int(time.time())
@@ -30,6 +76,16 @@ def run_ohlcv_row_builder(ticker: str, body: Dict, ctx=None) -> List[Dict]:
 
     # Detectamos última vela del batch
     max_ts = max(int(row[0]) for row in candles if isinstance(row, (list, tuple)))
+
+    # Pre-resolve calendar and session context
+    if session_ctx is not None:
+        cal = session_ctx["cal"]
+        now_exchange = session_ctx["now_exchange"]
+        current_session = session_ctx["current_session"]
+        session_close = session_ctx["session_close"]
+    else:
+        cal = resolve_calendar_for_symbol(ticker)
+        now_exchange = None  # will be computed lazily below if needed
 
     for row in candles:
         if not isinstance(row, (list, tuple)) or len(row) < 5:
@@ -44,23 +100,21 @@ def run_ohlcv_row_builder(ticker: str, body: Dict, ctx=None) -> List[Dict]:
 
         # Solo aplicamos lógica institucional para 1D (case-insensitive)
         if timeframe.upper() == "1D" and ts == max_ts:
-            tz = cal.tz
-            now_exchange = pd.Timestamp.now(tz=tz)
-
-            # 1) Sesión "vigente" relativa a NOW.
-            #    - Si hoy es sesión: usa hoy
-            #    - Si ahora cae fuera de horario / finde / holiday: usa la última sesión anterior
-            try:
-                current_session = cal.minute_to_session(now_exchange, direction="previous")
-            except Exception:
-                # Fallback ultra defensivo
+            if session_ctx is None:
+                # Fallback: per-symbol computation (backward compat)
+                tz = cal.tz
+                now_exchange = pd.Timestamp.now(tz=tz)
                 try:
-                    current_session = cal.date_to_session(now_exchange.date(), direction="previous")
+                    current_session = cal.minute_to_session(now_exchange, direction="previous")
                 except Exception:
-                    current_session = None
+                    try:
+                        current_session = cal.date_to_session(now_exchange.date(), direction="previous")
+                    except Exception:
+                        current_session = None
+                session_close = cal.session_close(current_session) if current_session else None
 
-            # 2) Sesión asociada a la vela (también "previous" para tolerar timestamps raros del proveedor)
-            bar_time = pd.Timestamp(ts, unit="s", tz="UTC").tz_convert(tz)
+            # 2) Sesión asociada a la vela
+            bar_time = pd.Timestamp(ts, unit="s", tz="UTC").tz_convert(cal.tz)
             try:
                 candle_session = cal.minute_to_session(bar_time, direction="previous")
             except Exception:
@@ -69,9 +123,9 @@ def run_ohlcv_row_builder(ticker: str, body: Dict, ctx=None) -> List[Dict]:
             if current_session is not None and candle_session is not None:
                 # 3) Parcial solo si la vela es la del día vigente y aún no cerró oficialmente
                 if candle_session == current_session:
-                    session_close = cal.session_close(current_session)
                     if now_exchange < session_close:
                         is_partial = 1
+
         out.append({
             "ts": ts,
             "open": float(o),
