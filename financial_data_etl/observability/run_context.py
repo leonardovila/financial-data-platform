@@ -9,6 +9,10 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Iterator, List, IO
 from contextlib import contextmanager
 from financial_data_etl.storage.paths import LOGS_DIR
+from contextvars import ContextVar
+
+# Variable global segura para hilos y asincronismo
+_span_stack_var: ContextVar[tuple] = ContextVar("span_stack", default=())
 
 # Timestamp ISO en timezone local del sistema (ideal para operador humano).
 # Incluye offset (ej: -03:00) si el sistema tiene TZ configurado.
@@ -35,7 +39,6 @@ class RunContext:
     report_path: Path = field(init=False)
     report: Dict[str, Any] = field(default_factory=dict) # diccionario resumen (stages + estado final).
     _t0: float = field(default_factory=time.perf_counter) # contador de perf para duración precisa (mejor que time.time() para medir).
-    _span_stack: List[str] = field(default_factory=list)
     _log_fh: Optional[IO[str]] = field(default=None, init=False, repr=False)
     console: bool = True          # imprime cada evento en consola
     console_flush: bool = False   # si querés ver output inmediato sí o sí
@@ -98,38 +101,39 @@ class RunContext:
         self.report["stages"][stage] = payload # Guarda en report["stages"][stage]
         self.event("stage_err", level="ERROR", stage=stage, **payload) # Emite evento stage_err nivel ERROR
 
+    @property
+    def _span_stack(self) -> list:
+        return list(_span_stack_var.get())
+
     @contextmanager
-    def span(self, stage: str, **data: Any) -> Iterator[None]:
-        """
-        Mide duración de una etapa y registra stage_ok / stage_err automáticamente.
-        Uso:
-            with ctx.span("ohlcv_scrape", symbols=len(symbols)):
-                ...
-        """
+    def span(self, stage: str, **kwargs) -> Iterator[None]:
+        current = _span_stack_var.get()
+        token = _span_stack_var.set(current + (stage,))
+        
         t0 = time.perf_counter()
-        parent = self._span_stack[-1] if self._span_stack else None
-        self._span_stack.append(stage)
+        parent_stage = current[-1] if current else None
 
-        # Evento de inicio (opcional pero útil para reconstruir flujo)
-        self.event("stage_start", level="INFO", stage=stage, parent_stage=parent, **data)
+        self.event("stage_start", stage=stage, parent_stage=parent_stage, **kwargs)
 
+        status = "error"
         try:
             yield
-        except BaseException as exc:
-            dt = round(time.perf_counter() - t0, 6)
-            # stage_err ya loguea y guarda en report
-            self.stage_err(stage, exc, duration_s=dt, parent_stage=parent, **data)
+            status = "ok"
+        except Exception as e:
+            self.event("stage_error", level="ERROR", stage=stage, error=str(e))
             raise
-        else:
-            dt = round(time.perf_counter() - t0, 6)
-            self.stage_ok(stage, duration_s=dt, parent_stage=parent, **data)
         finally:
-            # Pop defensivo (por si hay errores raros)
-            if self._span_stack and self._span_stack[-1] == stage:
-                self._span_stack.pop()
-            else:
-                # Si se desbalanceó el stack, lo dejamos explícito en logs
-                self.event("span_stack_mismatch", level="ERROR", stage=stage, stack=list(self._span_stack))
+            dt = time.perf_counter() - t0
+            if status == "ok":
+                self.event(
+                    "stage_ok", 
+                    stage=stage, 
+                    status=status, 
+                    duration_s=round(dt, 6), 
+                    parent_stage=parent_stage, 
+                    **kwargs
+                )
+            _span_stack_var.reset(token)
 
     def write_report(self) -> None:
         with open(self.report_path, "w", encoding="utf-8") as f:
