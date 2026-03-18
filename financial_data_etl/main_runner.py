@@ -9,7 +9,6 @@ from financial_data_etl.derived_metrics.volume.volume_runner import run_volume_1
 from financial_data_etl.observability.run_context import RunContext
 
 import argparse
-from pathlib import Path
 from typing import List, Optional
 
 from financial_data_etl.storage.paths import DB_PATH

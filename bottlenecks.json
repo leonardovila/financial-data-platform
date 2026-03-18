@@ -155,7 +155,8 @@
     "issue_description": "Symbols are grouped by n_candles and each group is scraped via a separate asyncio.run() call. Each asyncio.run() creates a new event loop, and groups are processed sequentially. If there are 3 groups (e.g., bootstrap=4500, catchup=25, catchup=3), each group must fully complete before the next begins.",
     "business_impact": "The sequential group processing means the pipeline cannot overlap scraping of different n_candles groups. A small bootstrap group of 10 symbols blocks 2,390 catchup symbols from starting until it completes. Also, calling asyncio.run() multiple times is wasteful — creates/destroys event loops.",
     "proposed_architecture": "Single asyncio.run() wrapping all groups. Use a unified task queue where workers pull (symbol, n_candles) pairs regardless of group. Each worker processes whatever symbol is next, with the n_candles parameter varying per task. Eliminates group-sequential bottleneck entirely.",
-    "status": "OPEN"
+    "implemented": "OBSOLETE / FALSE POSITIVE. Audited main_runner.py and confirmed the pipeline already passes the unified increment_plan dict directly to the scraper without grouping by n_candles. Single asyncio queue is already in effect.",
+    "status": "CLOSED"
   },
   {
     "id": "BP-017",
@@ -174,7 +175,8 @@
     "issue_description": "The any(log_returns[j] is None for j in range(i - window + 1, i + 1)) check iterates up to 252 elements on every row for every window size. This is O(n * sum(windows)) = O(n * 467) with no early termination optimization. Additionally, data is unpacked into 5 separate lists by iterating the source 5 times.",
     "business_impact": "For 2,400 symbols × 252 rows × 5 windows × 252-max-check, this is ~750 million Python-level comparisons in the worst case. Contributes to the 51.8s volatility computation time.",
     "proposed_architecture": "Track None positions with a running counter: maintain a 'last_none_index' variable and check (i - last_none_index >= window) in O(1). Use zip(*data) for single-pass unpacking. Or eliminate entirely by switching to pandas where NaN handling is built into rolling operations.",
-    "status": "OPEN"
+    "implemented": "OBSOLETE / RESOLVED. Eradicated implicitly alongside BP-007. The native Python loops and manual None-checks were completely replaced by Pandas vectorized operations. The rolling(min_periods=window) method natively handles NaN propagation in C-level code, dropping the O(n*k) complexity to O(n).",
+    "status": "CLOSED"
   },
   {
     "id": "BP-019",
