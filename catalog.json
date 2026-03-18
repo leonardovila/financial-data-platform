@@ -1,14 +1,20 @@
 {
   "URNU": {
-    "provider_symbol": { "tradingview": "LSE:URNU" },
+    "provider_symbol": {
+      "tradingview": "LSE:URNU"
+    },
     "ticker": "URNU"
   },
   "QNC": {
-    "provider_symbol": { "tradingview": "TSXV:QNC" },
+    "provider_symbol": {
+      "tradingview": "TSXV:QNC"
+    },
     "ticker": "QNC"
   },
   "SGLN": {
-    "provider_symbol": { "tradingview": "LSE:SGLN" },
+    "provider_symbol": {
+      "tradingview": "LSE:SGLN"
+    },
     "ticker": "SGLN"
   },
   "NVDA": {
@@ -14506,5 +14512,35 @@
       "tradingview": "NASDAQ:ZSPC"
     },
     "ticker": "ZSPC"
+  },
+  "CVSA": {
+    "provider_symbol": {
+      "tradingview": "NYSE:CVSA"
+    },
+    "ticker": "CVSA"
+  },
+  "DCH": {
+    "provider_symbol": {
+      "tradingview": "NYSE:DCH"
+    },
+    "ticker": "DCH"
+  },
+  "RYZ": {
+    "provider_symbol": {
+      "tradingview": "NYSE:RYZ"
+    },
+    "ticker": "RYZ"
+  },
+  "RPC": {
+    "provider_symbol": {
+      "tradingview": "NYSE:RPC"
+    },
+    "ticker": "RPC"
+  },
+  "XRN": {
+    "provider_symbol": {
+      "tradingview": "NYSE:XRN"
+    },
+    "ticker": "XRN"
   }
 }
