@@ -1,127 +1,100 @@
-from __future__ import annotations
-from typing import Any, Dict, List, Tuple
+"""
+Mega-batch volume runner.
 
+Architecture:
+  1. ONE bulk SQL read for all symbols
+  2. ONE pandas DataFrame
+  3. Vectorized groupby rolling mean (SMA) + gap computation
+  4. ONE bulk upsert via single connection
+"""
+
+from __future__ import annotations
+from typing import List
+import pandas as pd
 from financial_data_etl.storage.tv_candles_store import _get_connection
 from financial_data_etl.derived_metrics.volume.volume_store import (
     init_volume_schema,
-    get_last_volume_ts,
     upsert_volume_rows,
 )
 
-OVERLAP_BARS = 5
-MAX_WINDOW = 200 + OVERLAP_BARS + 1
-
 SMA_WINDOWS = [20, 50, 100, 200]
 
-
-def _load_volume_window_1d(symbol: str, bootstrap: bool):
-    with _get_connection() as conn:
-
-        if bootstrap:
-            rows = conn.execute(
-                """
-                SELECT ts, close, volume, is_partial
-                FROM tv_candles_raw
-                WHERE timeframe='1d'
-                  AND symbol=?
-                ORDER BY ts ASC
-                """,
-                (symbol,),
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                """
-                SELECT ts, close, volume, is_partial
-                FROM (
-                    SELECT ts, close, volume, is_partial
-                    FROM tv_candles_raw
-                    WHERE timeframe='1d'
-                      AND symbol=?
-                    ORDER BY ts DESC
-                    LIMIT ?
-                )
-                ORDER BY ts ASC
-                """,
-                (symbol, MAX_WINDOW),
-            ).fetchall()
-
-    return [
-        (int(ts), float(close), float(volume), int(is_partial))
-        for ts, close, volume, is_partial in rows
-        if ts is not None and close is not None and volume is not None
-    ]
+OVERLAP_BARS = 5
+MAX_WINDOW = max(SMA_WINDOWS) + OVERLAP_BARS + 1  # 206
 
 
-def _sma(values: List[float], window: int):
-    out = [None] * len(values)
-    for i in range(len(values)):
-        if i + 1 >= window:
-            window_slice = values[i + 1 - window : i + 1]
-            out[i] = sum(window_slice) / window
-    return out
-
-
-def run_volume_1d(symbols: List[str], ctx=None):
-
+def run_volume_1d(symbols: List[str], ctx=None) -> None:
     if not symbols:
         return
 
-    total_symbols_processed = 0
-    total_bootstrap = 0
-    total_rows_upserted = 0
-
     init_volume_schema()
+    total_symbols = 0
+    total_rows = 0
 
-    for symbol in symbols:
+    conn = _get_connection()
+    try:
+        # ── BULK READ: one windowed query, all symbols ──
+        placeholders = ",".join("?" for _ in symbols)
+        raw = conn.execute(
+            f"""
+            SELECT symbol, ts, close, volume, is_partial
+            FROM (
+                SELECT symbol, ts, close, volume, is_partial,
+                       ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY ts DESC) AS rn
+                FROM tv_candles_raw
+                WHERE timeframe='1d'
+                  AND symbol IN ({placeholders})
+                  AND ts IS NOT NULL AND close IS NOT NULL AND volume IS NOT NULL
+            )
+            WHERE rn <= ?
+            ORDER BY symbol, ts ASC
+            """,
+            symbols + [MAX_WINDOW],
+        ).fetchall()
 
-        last_ts = get_last_volume_ts(symbol)
-        bootstrap = last_ts is None
+        if not raw:
+            return
 
-        if bootstrap:
-            total_bootstrap += 1
+        # ── ONE MEGA-DATAFRAME ──
+        df = pd.DataFrame(raw, columns=["symbol", "ts", "close", "volume", "is_partial"])
+        df["volume_usd"] = df["close"] * df["volume"]
 
-        rows = _load_volume_window_1d(symbol, bootstrap)
-
-        if not rows:
-            continue
-
-        ts_list = [r[0] for r in rows]
-        vol_usd = [r[1] * r[2] for r in rows]
-        partial_list = [r[3] for r in rows]
-
-        sma_map = {}
+        # ── ROLLING SMA + GAP (per group) ──
+        grouped_vusd = df.groupby("symbol")["volume_usd"]
         for w in SMA_WINDOWS:
-            sma_map[w] = _sma(vol_usd, w)
+            sma_col = f"vol_sma_{w}"
+            gap_col = f"vol_gap_{w}"
+            sma = grouped_vusd.rolling(window=w, min_periods=w).mean().droplevel(0)
+            df[sma_col] = sma
+            safe_sma = sma.where(sma != 0)
+            df[gap_col] = df["volume_usd"] / safe_sma - 1.0
 
-        final_rows = []
+        # ── OUTPUT PREP ──
+        out_cols = ["symbol", "ts", "volume_usd",
+                    "vol_sma_20", "vol_sma_50", "vol_sma_100", "vol_sma_200",
+                    "vol_gap_20", "vol_gap_50", "vol_gap_100", "vol_gap_200",
+                    "is_partial"]
+        df["ts"] = df["ts"].astype(int)
+        df["is_partial"] = df["is_partial"].astype(int)
+        records = df[out_cols].to_dict("records")
+        for row in records:
+            for key, val in row.items():
+                if isinstance(val, float) and val != val:
+                    row[key] = None
 
-        for i in range(len(rows)):
-            row = {
-                "symbol": symbol,
-                "ts": ts_list[i],
-                "volume_usd": vol_usd[i],
-                "vol_sma_20": sma_map[20][i],
-                "vol_sma_50": sma_map[50][i],
-                "vol_sma_100": sma_map[100][i],
-                "vol_sma_200": sma_map[200][i],
-                "vol_gap_20": (vol_usd[i] / sma_map[20][i] - 1.0) if sma_map[20][i] else None,
-                "vol_gap_50": (vol_usd[i] / sma_map[50][i] - 1.0) if sma_map[50][i] else None,
-                "vol_gap_100": (vol_usd[i] / sma_map[100][i] - 1.0) if sma_map[100][i] else None,
-                "vol_gap_200": (vol_usd[i] / sma_map[200][i] - 1.0) if sma_map[200][i] else None,
-                "is_partial": partial_list[i],
-            }
+        # ── BULK WRITE: one connection, one executemany ──
+        upsert_volume_rows(records, conn=conn)
+        conn.commit()
 
-            final_rows.append(row)
+        total_symbols = int(df["symbol"].nunique())
+        total_rows = len(records)
 
-        upsert_volume_rows(final_rows)
-
-        total_symbols_processed += 1
-        total_rows_upserted += len(final_rows)
+    finally:
+        conn.close()
 
     if ctx:
         ctx.event(
             "derived_volume_summary",
-            symbols_processed=total_symbols_processed,
-            bootstrap_symbols=total_bootstrap,
-            rows_upserted=total_rows_upserted,
+            symbols_processed=total_symbols,
+            rows_upserted=total_rows,
         )

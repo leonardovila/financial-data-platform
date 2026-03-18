@@ -1,10 +1,21 @@
+"""
+Mega-batch volatility runner.
+
+Architecture:
+  1. ONE bulk SQL read for all symbols
+  2. ONE pandas DataFrame
+  3. Vectorized groupby log-returns + rolling std (ddof=1) * sqrt(252)
+  4. ONE bulk upsert via single connection
+"""
+
 from __future__ import annotations
 import math
-from typing import Any, Dict, List, Tuple
+from typing import List
+import pandas as pd
+import numpy as np
 from financial_data_etl.storage.tv_candles_store import _get_connection
 from financial_data_etl.derived_metrics.volatility.volatility_store import (
     init_volatility_schema,
-    get_last_vol_ts,
     upsert_volatility_rows,
 )
 
@@ -17,152 +28,86 @@ VOL_WINDOWS = {
 }
 
 OVERLAP_BARS = 5
-MAX_LAG = max(VOL_WINDOWS.values())
-WINDOW_BARS = MAX_LAG + OVERLAP_BARS + 1
+MAX_LAG = max(VOL_WINDOWS.values())  # 252
+WINDOW_BARS = MAX_LAG + OVERLAP_BARS + 1  # 258
 ANNUALIZATION_FACTOR = math.sqrt(252)
 
-def _load_ohlc_window_1d(symbol: str, bootstrap: bool) -> List[Tuple[int, float, float, float]]:
-    """
-    Returns: [(ts, high, low, close)]
-    """
-    with _get_connection() as conn:
-
-        if bootstrap:
-            rows = conn.execute(
-                """
-                SELECT ts, high, low, close, is_partial
-                FROM tv_candles_raw
-                WHERE timeframe='1d'
-                  AND symbol=?
-                ORDER BY ts ASC
-                """,
-                (symbol,),
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                """
-                SELECT ts, high, low, close, is_partial
-                FROM (
-                    SELECT ts, high, low, close, is_partial
-                    FROM tv_candles_raw
-                    WHERE timeframe='1d'
-                      AND symbol=?
-                    ORDER BY ts DESC
-                    LIMIT ?
-                )
-                ORDER BY ts ASC
-                """,
-                (symbol, WINDOW_BARS),
-            ).fetchall()
-
-    result = []
-    for ts, high, low, close, is_partial in rows:
-        if ts is None or close is None or high is None or low is None:
-            continue
-        result.append((int(ts), float(high), float(low), float(close), int(is_partial)))
-
-    return result
-
-
-def _compute_volatility_series(data: List[Tuple[int, float, float, float, int]]) -> List[Dict[str, Any]]:
-    """
-    data: asc por ts.
-    """
-    out: List[Dict[str, Any]] = []
-
-    ts_list = [x[0] for x in data]
-    high_list = [x[1] for x in data]
-    low_list = [x[2] for x in data]
-    close_list = [x[3] for x in data]
-    partial_list = [x[4] for x in data]
-
-    # log returns
-    log_returns: List[float] = [None]
-    for i in range(1, len(close_list)):
-        prev = close_list[i - 1]
-        curr = close_list[i]
-        if prev and prev > 0:
-            log_returns.append(math.log(curr / prev))
-        else:
-            log_returns.append(None)
-
-    for i in range(len(data)):
-        row: Dict[str, Any] = {
-            "ts": ts_list[i],
-            "is_partial": partial_list[i],
-        }
-
-        # range intraday
-        row["range_intraday"] = (
-            (high_list[i] - low_list[i]) / close_list[i]
-            if close_list[i] != 0
-            else None
-        )
-
-        for col, window in VOL_WINDOWS.items():
-            if i < window or any(log_returns[j] is None for j in range(i - window + 1, i + 1)):
-                row[col] = None
-            else:
-                window_slice = log_returns[i - window + 1 : i + 1]
-                mean = sum(window_slice) / window
-                variance = sum((x - mean) ** 2 for x in window_slice) / (window - 1)
-                std = math.sqrt(variance)
-                row[col] = std * ANNUALIZATION_FACTOR
-
-        out.append(row)
-
-    return out
 
 def run_volatility_1d(symbols: List[str], ctx=None) -> None:
     if not symbols:
         return
-    
-    total_symbols_processed = 0
-    total_bootstrap = 0
-    total_rows_upserted = 0
 
     init_volatility_schema()
+    total_symbols = 0
+    total_rows = 0
 
-    for symbol in symbols:
-
-        last_vol = get_last_vol_ts(symbol)
-        bootstrap = last_vol is None
-
-        if bootstrap:
-            total_bootstrap += 1
-
-        data = _load_ohlc_window_1d(symbol, bootstrap)
-
-        if not data:
-            continue
-
-        vol_rows = _compute_volatility_series(data)
-
-        final_rows = []
-        for r in vol_rows:
-            final_rows.append(
-                {
-                    "symbol": symbol,
-                    "ts": r["ts"],
-                    "range_intraday": r["range_intraday"],
-                    "vol_1w": r["vol_1w"],
-                    "vol_1m": r["vol_1m"],
-                    "vol_3m": r["vol_3m"],
-                    "vol_6m": r["vol_6m"],
-                    "vol_1y": r["vol_1y"],
-                    "is_partial": r["is_partial"],
-                }
+    conn = _get_connection()
+    try:
+        # ── BULK READ: one windowed query, all symbols ──
+        placeholders = ",".join("?" for _ in symbols)
+        raw = conn.execute(
+            f"""
+            SELECT symbol, ts, high, low, close, is_partial
+            FROM (
+                SELECT symbol, ts, high, low, close, is_partial,
+                       ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY ts DESC) AS rn
+                FROM tv_candles_raw
+                WHERE timeframe='1d'
+                  AND symbol IN ({placeholders})
+                  AND ts IS NOT NULL AND close IS NOT NULL
+                  AND high IS NOT NULL AND low IS NOT NULL
             )
+            WHERE rn <= ?
+            ORDER BY symbol, ts ASC
+            """,
+            symbols + [WINDOW_BARS],
+        ).fetchall()
 
-        upsert_volatility_rows(final_rows)
+        if not raw:
+            return
 
-        total_symbols_processed += 1
-        total_rows_upserted += len(final_rows)
-    
-    if ctx is not None:
+        # ── ONE MEGA-DATAFRAME ──
+        df = pd.DataFrame(raw, columns=["symbol", "ts", "high", "low", "close", "is_partial"])
+
+        # ── LOG RETURNS (per group, no cross-symbol leakage) ──
+        prev_close = df.groupby("symbol")["close"].shift(1)
+        log_ret = np.log(df["close"] / prev_close.where(prev_close > 0))
+        log_ret = log_ret.where(np.isfinite(log_ret))
+        df["_log_ret"] = log_ret
+
+        # ── RANGE INTRADAY ──
+        df["range_intraday"] = ((df["high"] - df["low"]) / df["close"]).where(df["close"] != 0)
+
+        # ── ROLLING ANNUALIZED VOLATILITY (per group) ──
+        grouped_lr = df.groupby("symbol")["_log_ret"]
+        for col, window in VOL_WINDOWS.items():
+            rolled = grouped_lr.rolling(window=window, min_periods=window).std()
+            df[col] = rolled.droplevel(0) * ANNUALIZATION_FACTOR
+
+        # ── OUTPUT PREP ──
+        metric_cols = ["range_intraday"] + list(VOL_WINDOWS.keys())
+        out_cols = ["symbol", "ts", "is_partial"] + metric_cols
+        df["ts"] = df["ts"].astype(int)
+        df["is_partial"] = df["is_partial"].astype(int)
+        records = df[out_cols].to_dict("records")
+        for row in records:
+            for key, val in row.items():
+                if isinstance(val, float) and val != val:
+                    row[key] = None
+
+        # ── BULK WRITE: one connection, one executemany ──
+        upsert_volatility_rows(records, conn=conn)
+        conn.commit()
+
+        total_symbols = int(df["symbol"].nunique())
+        total_rows = len(records)
+
+    finally:
+        conn.close()
+
+    if ctx:
         ctx.event(
             "derived_volatility_summary",
-            symbols_processed=total_symbols_processed,
-            bootstrap_symbols=total_bootstrap,
-            rows_upserted=total_rows_upserted,
+            symbols_processed=total_symbols,
+            rows_upserted=total_rows,
         )

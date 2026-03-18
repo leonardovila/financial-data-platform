@@ -33,30 +33,32 @@ def get_last_volume_ts(symbol: str):
         ).fetchone()
         return row[0] if row and row[0] is not None else None
 
-def upsert_volume_rows(rows: list[dict]):
+def upsert_volume_rows(rows: list[dict], conn=None):
     if not rows:
         return
 
-    with _get_connection() as conn:
-        conn.executemany(
-            """
-            INSERT OR REPLACE INTO volume_1d (
-                symbol, ts,
-                volume_usd,
-                vol_sma_20, vol_sma_50, vol_sma_100, vol_sma_200,
-                vol_gap_20, vol_gap_50, vol_gap_100, vol_gap_200,
-                is_partial
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            [
-                (
-                    r["symbol"], r["ts"],
-                    r["volume_usd"],
-                    r["vol_sma_20"], r["vol_sma_50"], r["vol_sma_100"], r["vol_sma_200"],
-                    r["vol_gap_20"], r["vol_gap_50"], r["vol_gap_100"], r["vol_gap_200"],
-                    r["is_partial"],
-                )
-                for r in rows
-            ]
-        )
-        conn.commit()
+    _conn = conn if conn is not None else _get_connection()
+    _conn.executemany(
+        """
+        INSERT OR REPLACE INTO volume_1d (
+            symbol, ts,
+            volume_usd,
+            vol_sma_20, vol_sma_50, vol_sma_100, vol_sma_200,
+            vol_gap_20, vol_gap_50, vol_gap_100, vol_gap_200,
+            is_partial
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            (
+                r["symbol"], r["ts"],
+                r["volume_usd"],
+                r["vol_sma_20"], r["vol_sma_50"], r["vol_sma_100"], r["vol_sma_200"],
+                r["vol_gap_20"], r["vol_gap_50"], r["vol_gap_100"], r["vol_gap_200"],
+                r["is_partial"],
+            )
+            for r in rows
+        ]
+    )
+    if conn is None:
+        _conn.commit()
+        _conn.close()

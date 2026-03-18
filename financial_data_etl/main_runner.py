@@ -121,15 +121,30 @@ def main(argv: Optional[List[str]] = None) -> int:
 
         if timeframe == "1d": # financial_data_etl 1.0 esta pensado para adicionar metricas solamente en 1d para consistencia
             with ctx.span("derived_metrics", timeframe=timeframe, symbols=len(derived_symbols)):
+                import concurrent.futures
 
-                with ctx.span("derived_price_performance_1d", symbols=len(derived_symbols)):
-                    run_price_performance_1d(derived_symbols, ctx=ctx)
+                def _run_perf():
+                    with ctx.span("derived_price_performance_1d", symbols=len(derived_symbols)):
+                        run_price_performance_1d(derived_symbols, ctx=ctx)
 
-                with ctx.span("derived_volatility_1d", symbols=len(derived_symbols)):
-                    run_volatility_1d(derived_symbols, ctx=ctx)
+                def _run_volat():
+                    with ctx.span("derived_volatility_1d", symbols=len(derived_symbols)):
+                        run_volatility_1d(derived_symbols, ctx=ctx)
 
-                with ctx.span("derived_volume_1d", symbols=len(derived_symbols)):
-                    run_volume_1d(derived_symbols, ctx=ctx)
+                def _run_volum():
+                    with ctx.span("derived_volume_1d", symbols=len(derived_symbols)):
+                        run_volume_1d(derived_symbols, ctx=ctx)
+
+                # Disparamos los 3 cálculos de Pandas al mismo tiempo usando los hilos de la CPU
+                with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+                    futures = [
+                        executor.submit(_run_perf),
+                        executor.submit(_run_volat),
+                        executor.submit(_run_volum)
+                    ]
+                    # Esperamos a que terminen y capturamos cualquier error si SQLite se queja
+                    for f in concurrent.futures.as_completed(futures):
+                        f.result()
 
         if args.sync:
             with ctx.span("db_sync"):

@@ -55,7 +55,8 @@
     "issue_description": "All three derived metric runners iterate over 2,400 symbols in a Python for-loop, executing 2-3 individual SQLite queries per symbol per runner: get_last_ts() + load_window() + upsert(). Total: 3 runners × 3 queries × 2,400 symbols = 21,600 individual database round-trips. Each query opens a NEW sqlite3.Connection via _get_connection().",
     "business_impact": "124.5 seconds spent on derived metrics (12.4% of runtime). The N+1 query pattern and connection churn are responsible for the majority of this. Makes adding more symbols or metrics untenable — scales linearly.",
     "proposed_architecture": "Bulk pattern (same as increment_planner.py already does): 1) Single query: SELECT symbol, MAX(ts) FROM volatility_1d WHERE symbol IN (...) GROUP BY symbol. 2) Single query: SELECT symbol, ts, high, low, close FROM tv_candles_raw WHERE symbol IN (...) AND timeframe='1d' ORDER BY symbol, ts. 3) Compute all symbols in-memory. 4) Single executemany upsert for all symbols. Reduce 21,600 queries to ~9 total.",
-    "status": "OPEN"
+    "implemented": "Mega-batch architecture: Each runner now opens ONE connection, executes ONE bulk SELECT ... WHERE symbol IN (...) to load all symbols into a single pandas DataFrame, performs vectorized groupby computation, then executes ONE bulk upsert via the same connection. The for-symbol loop is completely eliminated. 21,600 queries reduced to 6 total (1 read + 1 write per runner). get_last_*_ts() calls eliminated entirely.",
+    "status": "CLOSED"
   },
   {
     "id": "BP-007",
@@ -64,7 +65,8 @@
     "issue_description": "All derived metric calculations use pure Python list iteration: manual log-return computation, manual rolling mean/variance with sum()/list slicing, manual SMA with repeated full-list passes. For 2,400 symbols × ~252 data points × 5 windows, this is millions of interpreted Python arithmetic operations.",
     "business_impact": "CPU-bound bottleneck. Volatility alone takes 51.8s. NumPy vectorization would reduce this to sub-second. Blocks any future addition of more complex metrics (e.g., Sharpe ratio, drawdown, correlation matrices).",
     "proposed_architecture": "Load all symbols' data into a single pandas DataFrame (or numpy structured array). Use df.groupby('symbol').apply() with vectorized operations: np.log(close/close.shift(1)) for log returns, .rolling(window).std() * sqrt(252) for volatility, .rolling(window).mean() for SMA. Single vectorized pass replaces 2,400 Python loops. Expected speedup: 50-100x.",
-    "status": "OPEN"
+    "implemented": "All three runners vectorized with pandas/numpy on a single mega-DataFrame per runner (not per-symbol). groupby('symbol').shift() for returns, groupby().rolling().std() for volatility, groupby().rolling().mean() for SMA. The per-symbol DataFrame instantiation overhead that negated the initial vectorization is now eliminated — ONE DataFrame covers all 2,400 symbols. NaN-to-None sanitization applied post-to_dict() for SQLite. Mathematical equivalence verified with automated tests (0 mismatches) and integration tests on real database (no cross-symbol leakage, correct window boundaries).",
+    "status": "CLOSED"
   },
   {
     "id": "BP-008",
@@ -73,7 +75,8 @@
     "issue_description": "Price performance, volatility, and volume runners execute sequentially (33.7s + 51.8s + 39.0s = 124.5s). They read from the same source table (tv_candles_raw) and write to three independent tables (performance_1d, volatility_1d, volume_1d). Zero data dependency between them.",
     "business_impact": "Total derived metrics time is the SUM of all three instead of the MAX. With parallelization, 124.5s → ~52s (bounded by the slowest runner). Combined with BP-007 vectorization, could drop to <2s.",
     "proposed_architecture": "concurrent.futures.ThreadPoolExecutor(max_workers=3) to run all three metric runners in parallel. SQLite WAL mode supports concurrent readers. Alternatively, if vectorized with pandas, compute all three metric sets in a single grouped pass over the data — no need for separate runners at all.",
-    "status": "OPEN"
+    "implemented": "Manual implementation by Leonardo + Gemini: Orchestration in main_runner.py refactored to use concurrent.futures.ThreadPoolExecutor(max_workers=3). The three metrics (Price Performance, Volatility, Volume) now execute strictly in parallel. SQLite WAL mode handled concurrent upserts flawlessly without locking. Total compute time is now bounded by the MAX duration of the slowest runner rather than the SUM, dropping total derived metrics time from ~0.59s to ~0.32s.",
+    "status": "CLOSED"
   },
   {
     "id": "BP-009",
@@ -82,7 +85,8 @@
     "issue_description": "Every function call (get_last_vol_ts, _load_ohlc_window_1d, upsert_volatility_rows, etc.) creates a brand new sqlite3.Connection, sets PRAGMA WAL, sets PRAGMA synchronous, then discards it. For the derived metrics phase alone, this creates and destroys 21,600+ connections.",
     "business_impact": "Connection setup overhead (file open, PRAGMA execution, WAL checkpoint negotiation) multiplied 21,600 times. Contributes significantly to the 124.5s derived metrics duration. Also prevents SQLite from efficiently caching prepared statements.",
     "proposed_architecture": "Connection-per-phase pattern: open ONE connection at the start of each runner (or share one across all three), pass it through all function calls, close at the end. Alternatively, use a module-level connection singleton with lazy initialization. SQLite connections are not thread-safe, but within a single-threaded runner this is perfectly safe.",
-    "status": "OPEN"
+    "implemented": "Each runner now opens exactly ONE _get_connection() for its entire lifecycle (read + write). The upsert_*_rows store functions accept an optional conn= parameter — when provided, they use the caller's connection without opening/closing their own. 21,600+ connection open/close cycles reduced to 3 total (one per runner).",
+    "status": "CLOSED"
   },
   {
     "id": "BP-010",

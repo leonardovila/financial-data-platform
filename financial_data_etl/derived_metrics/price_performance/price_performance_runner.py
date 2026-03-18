@@ -1,13 +1,22 @@
+"""
+Mega-batch price performance runner.
+
+Architecture:
+  1. ONE bulk SQL read for all symbols
+  2. ONE pandas DataFrame
+  3. Vectorized groupby returns (shift + division)
+  4. ONE bulk upsert via single connection
+"""
+
 from __future__ import annotations
-from typing import Any, Dict, List, Tuple
+from typing import List
+import pandas as pd
 from financial_data_etl.storage.tv_candles_store import _get_connection
 from financial_data_etl.derived_metrics.price_performance.price_performance_store import (
     init_performance_schema,
-    get_last_perf_ts,
     upsert_performance_rows,
 )
 
-# trading-days aproximado
 LAGS = {
     "ret_1d": 1,
     "ret_1w": 5,
@@ -17,134 +26,76 @@ LAGS = {
     "ret_1y": 252,
 }
 
-OVERLAP_BARS = 5  # recalcular cola defensiva
+OVERLAP_BARS = 5
 MAX_LAG = max(LAGS.values())  # 252
-WINDOW_BARS = MAX_LAG + OVERLAP_BARS + 1
+WINDOW_BARS = MAX_LAG + OVERLAP_BARS + 1  # 258
 
-def _load_closes_window_1d(symbol: str, bootstrap: bool) -> List[Tuple[int, float]]:
-    with _get_connection() as conn:
-
-        if bootstrap:
-            rows = conn.execute(
-                """
-                SELECT ts, close, is_partial
-                FROM tv_candles_raw
-                WHERE timeframe='1d'
-                  AND symbol=?
-                ORDER BY ts ASC
-                """,
-                (symbol,),
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                """
-                SELECT ts, close, is_partial
-                FROM (
-                    SELECT ts, close, is_partial
-                    FROM tv_candles_raw
-                    WHERE timeframe='1d'
-                      AND symbol=?
-                    ORDER BY ts DESC
-                    LIMIT ?
-                )
-                ORDER BY ts ASC
-                """,
-                (symbol, WINDOW_BARS),
-            ).fetchall()
-
-    result = []
-    for ts, close, is_partial in rows:
-        if ts is None or close is None:
-            continue
-        result.append((int(ts), float(close), int(is_partial)))
-
-    return result
-
-def _compute_returns_series(closes: List[Tuple[int, float, int]]) -> List[Dict[str, Any]]:
-    """
-    closes: asc por ts.
-    Devuelve rows para performance_1d.
-    """
-    ts_list = [x[0] for x in closes]
-    c_list = [x[1] for x in closes]
-    partial_list = [x[2] for x in closes]
-
-    out: List[Dict[str, Any]] = []
-
-    for i in range(len(c_list)):
-        c0 = c_list[i]
-        row: Dict[str, Any] = {
-            "ts": ts_list[i],
-            "is_partial": partial_list[i],
-        }
-
-        for col, lag in LAGS.items():
-            j = i - lag
-            if j >= 0 and c_list[j] not in (0.0, None):
-                row[col] = (c0 / c_list[j]) - 1.0
-            else:
-                row[col] = None
-
-        out.append(row)
-
-    return out
 
 def run_price_performance_1d(symbols: List[str], ctx=None) -> None:
-    """
-    Incremental:
-    - Si performance no tiene nada para el símbolo: compute full.
-    - Si tiene: compute desde (last_perf_idx - OVERLAP_BARS) hasta el final.
-    """
     if not symbols:
         return
-    
-    total_symbols_processed = 0
-    total_bootstrap = 0
-    total_rows_upserted = 0
 
     init_performance_schema()
+    total_symbols = 0
+    total_rows = 0
 
-    for symbol in symbols:
-
-        last_perf = get_last_perf_ts(symbol)
-        bootstrap = last_perf is None
-
-        if bootstrap:
-            total_bootstrap += 1
-
-        closes = _load_closes_window_1d(symbol, bootstrap)
-
-        if not closes:
-            continue
-
-        perf_rows = _compute_returns_series(closes)
-
-        # Siempre upsert toda la ventana recalculada
-        final_rows = []
-        for r in perf_rows:
-            final_rows.append(
-                {
-                    "symbol": symbol,
-                    "ts": r["ts"],
-                    "ret_1d": r["ret_1d"],
-                    "ret_1w": r["ret_1w"],
-                    "ret_1m": r["ret_1m"],
-                    "ret_3m": r["ret_3m"],
-                    "ret_6m": r["ret_6m"],
-                    "ret_1y": r["ret_1y"],
-                    "is_partial": r["is_partial"],
-                }
+    conn = _get_connection()
+    try:
+        # ── BULK READ: one windowed query, all symbols ──
+        placeholders = ",".join("?" for _ in symbols)
+        raw = conn.execute(
+            f"""
+            SELECT symbol, ts, close, is_partial
+            FROM (
+                SELECT symbol, ts, close, is_partial,
+                       ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY ts DESC) AS rn
+                FROM tv_candles_raw
+                WHERE timeframe='1d'
+                  AND symbol IN ({placeholders})
+                  AND ts IS NOT NULL AND close IS NOT NULL
             )
+            WHERE rn <= ?
+            ORDER BY symbol, ts ASC
+            """,
+            symbols + [WINDOW_BARS],
+        ).fetchall()
 
-        upsert_performance_rows(final_rows)
+        if not raw:
+            return
 
-        total_symbols_processed += 1
-        total_rows_upserted += len(final_rows)
-    
-    if ctx is not None:
+        # ── ONE MEGA-DATAFRAME ──
+        df = pd.DataFrame(raw, columns=["symbol", "ts", "close", "is_partial"])
+
+        # ── VECTORIZED GROUPBY RETURNS ──
+        grouped_close = df.groupby("symbol")["close"]
+        for col, lag in LAGS.items():
+            shifted = grouped_close.shift(lag)
+            safe_shifted = shifted.where(shifted != 0.0)
+            df[col] = df["close"] / safe_shifted - 1.0
+
+        # ── OUTPUT PREP ──
+        out_cols = ["symbol", "ts", "is_partial"] + list(LAGS.keys())
+        df["ts"] = df["ts"].astype(int)
+        df["is_partial"] = df["is_partial"].astype(int)
+        records = df[out_cols].to_dict("records")
+        for row in records:
+            for key, val in row.items():
+                if isinstance(val, float) and val != val:
+                    row[key] = None
+
+        # ── BULK WRITE: one connection, one executemany ──
+        upsert_performance_rows(records, conn=conn)
+        conn.commit()
+
+        total_symbols = int(df["symbol"].nunique())
+        total_rows = len(records)
+
+    finally:
+        conn.close()
+
+    if ctx:
         ctx.event(
             "derived_price_performance_summary",
-            symbols_processed=total_symbols_processed,
-            bootstrap_symbols=total_bootstrap,
-            rows_upserted=total_rows_upserted,
+            symbols_processed=total_symbols,
+            rows_upserted=total_rows,
         )
