@@ -159,7 +159,7 @@
       "keepalive": "While a subscription is active, the TV connection stays alive naturally (recv loop is running). When no subscription is active but idle_timeout hasn't elapsed, no keepalive is needed — TV connections survive minutes of silence.",
       "memory": "The manager holds ONE session dict (~200 bytes) and ONE websocket object. Negligible."
     },
-    "status": "WIP"
+    "status": "CLOSED"
   },
   {
     "id": "LIVE-05",
@@ -207,7 +207,7 @@
       }
     },
     "zombie_protection": "Pure function. Opens/closes its own connection. No persistent state. If it fails (DB locked, missing table), it raises an exception that the WS handler catches and sends as an error frame to the client.",
-    "status": "PENDING"
+    "status": "CLOSED"
   },
   {
     "id": "LIVE-06",
