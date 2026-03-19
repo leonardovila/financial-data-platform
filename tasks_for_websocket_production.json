@@ -32,7 +32,7 @@
       "does_NOT_change": "The existing request_ohlcv_and_fundamentals() and request_batch_multiplexed() are untouched. They remain the fire-and-forget functions for the batch ETL. subscribe_ohlcv_stream is a NEW function that coexists alongside them."
     },
     "zombie_protection": "The STREAM_RECV_TIMEOUT (45s) prevents infinite hangs. If TV stops sending (server crash, network partition), the generator yields ('heartbeat', None) which the handler uses to send a keepalive to the client. If 5 consecutive heartbeats arrive with no data, the handler should assume TV is dead and close. The finally block always cleans up TV sessions.",
-    "status": "WIP"
+    "status": "CLOSED"
   },
   {
     "id": "LIVE-02",
@@ -78,7 +78,7 @@
       "memory_budget": "258 rows × 6 float64 columns = 12,384 bytes raw + ~100KB Pandas overhead ≈ 115KB per LiveSymbolState. 10 concurrent clients = 1.15MB. 100 clients = 11.5MB. RAM is never a concern."
     },
     "zombie_protection": "LiveSymbolState is owned by the WS handler coroutine. When the handler exits (client disconnect), the coroutine's local variables are garbage collected, including the LiveSymbolState and its DataFrame. No module-level references, no registry, no leak path. The last_tick_ts field enables the handler to detect stale state (no ticks for 5 minutes during market hours → TV connection is likely dead).",
-    "status": "PENDING"
+    "status": "CLOSED"
   },
   {
     "id": "LIVE-03",
