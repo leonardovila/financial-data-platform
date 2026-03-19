@@ -9,7 +9,7 @@ Refactored for:
 """
 
 from __future__ import annotations
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, AsyncGenerator, Tuple, List
 import json, re, asyncio, itertools, websockets
 from pathlib import Path
 from datetime import datetime
@@ -503,3 +503,197 @@ async def cleanup_batch_sessions(
             )
         except Exception:
             pass
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# LIVE STREAM: Seed & Edge async generator (LIVE-01)
+#
+# Architecture:
+#   1. Subscribe to ONE symbol: 3 chart sends + 3 quote sends
+#   2. Yield ('seed', candles) on initial timescale_update
+#   3. Yield ('tick', candles) on every subsequent 'du' (data update) push
+#   4. Yield ('fundamentals', snapshot) once on quote_completed
+#   5. Yield ('company_name', name) on symbol_resolved
+#   6. Yield ('heartbeat', None) on RECV_TIMEOUT with no data
+#   7. On ConnectionClosed: raise — caller handles reconnection
+#   8. try/finally guarantees chart_delete_session + quote_delete_session
+#      even on generator close (handler disconnect, GC, .aclose())
+#
+# This function does NOT modify any existing batch ETL code paths.
+# ──────────────────────────────────────────────────────────────────────────────
+
+STREAM_RECV_TIMEOUT = 45  # seconds — more generous than batch RECV_TIMEOUT
+                          # because the live stream may go quiet during low
+                          # market activity (pre-market, post-hours, weekends)
+
+
+async def subscribe_ohlcv_stream(
+    session: Dict[str, Any],
+    provider_symbol: str,
+    timeframe: str,
+    n_initial: int = 3,
+) -> AsyncGenerator[Tuple[str, Any], None]:
+    """
+    Async generator: subscribes to a TradingView symbol and STAYS connected,
+    yielding live candle updates as TradingView pushes them.
+
+    The caller consumes with:
+        async for event_type, data in subscribe_ohlcv_stream(session, ...):
+            if event_type == 'seed': ...
+            elif event_type == 'tick': ...
+
+    When the caller breaks or the generator is closed, the finally block
+    sends chart_delete_session + quote_delete_session to clean up server-side.
+
+    Yields:
+        ('seed', List[List[float]])        — initial candles from timescale_update
+        ('tick', List[List[float]])        — live bar update(s) from 'du' message
+        ('fundamentals', Dict[str, Any])   — quote snapshot on quote_completed
+        ('company_name', str)              — resolved company name
+        ('heartbeat', None)                — timeout, no data (keepalive signal)
+
+    Raises:
+        websockets.ConnectionClosed — connection died, caller must reconnect
+    """
+    ws = session["ws"]
+    trace_file = session.get("trace_file")
+    chart_id = session["chart_id"]
+    quote_id = session.get("quote_id", "qs_live_1")
+    tf_tv = _TF_ALIAS_FOR_TV.get(timeframe, timeframe.upper())
+
+    try:
+        # ── SUBSCRIBE: fire 6 sends (3 chart + 3 quote) ──
+
+        # Chart (OHLCV) — creates a persistent subscription
+        await send_to_tradingview(
+            ws, {"m": "chart_create_session", "p": [chart_id]}, trace_file
+        )
+        await send_to_tradingview(
+            ws, {"m": "resolve_symbol", "p": [chart_id, "s1", provider_symbol]}, trace_file
+        )
+        await send_to_tradingview(ws, {
+            "m": "create_series",
+            "p": [chart_id, "sds_1", "s1", "s1", tf_tv, n_initial, ""],
+        }, trace_file)
+
+        # Quote (Fundamentals)
+        await send_to_tradingview(
+            ws, {"m": "quote_create_session", "p": [quote_id]}, trace_file
+        )
+        await send_to_tradingview(ws, {
+            "m": "quote_set_fields",
+            "p": [quote_id] + _QUOTE_FIELDS,
+        }, trace_file)
+        await send_to_tradingview(ws, {
+            "m": "quote_add_symbols",
+            "p": [
+                quote_id,
+                f"={{\"adjustment\":\"splits\",\"currency-id\":\"USD\",\"symbol\":\"{provider_symbol}\"}}",
+            ],
+        }, trace_file)
+
+        if trace_file:
+            trace_file.write(f"STREAM SUBSCRIBED: {provider_symbol} ({tf_tv}, n={n_initial})\n\n")
+
+        # ── INFINITE RECEIVE LOOP: yield events as they arrive ──
+        quote_snapshot: Dict[str, Any] = {}
+
+        while True:
+            try:
+                message = await asyncio.wait_for(
+                    ws.recv(), timeout=STREAM_RECV_TIMEOUT
+                )
+            except asyncio.TimeoutError:
+                # No message for 45s — market may be closed or TV is quiet.
+                # Yield heartbeat so the handler can send a keepalive to the
+                # client and track liveness. Do NOT break — stay subscribed.
+                yield ("heartbeat", None)
+                continue
+
+            if trace_file:
+                trace_file.write("RECEIVE RAW:\n")
+                trace_file.write(message + "\n\n")
+
+            for chunk in re.split(r"~m~\d+~m~", message)[1:]:
+                if not chunk.strip():
+                    continue
+
+                try:
+                    payload = json.loads(chunk)
+                except json.JSONDecodeError:
+                    continue
+
+                mtype = payload.get("m")
+
+                # ── OHLCV: initial seed (full candle set) ──
+                if mtype == "timescale_update":
+                    candles = parse_ohlcv(payload)
+                    if trace_file:
+                        trace_file.write(
+                            f"TIMESCALE_UPDATE: {len(candles)} candles for {provider_symbol}\n\n"
+                        )
+                    yield ("seed", candles)
+
+                # ── OHLCV: live bar tick (incremental update) ──
+                # 'du' has identical p[1].sds_1.s structure → parse_ohlcv works
+                elif mtype == "du":
+                    candles = parse_ohlcv(payload)
+                    if candles:
+                        if trace_file:
+                            trace_file.write(
+                                f"DU: {len(candles)} bar(s) updated for {provider_symbol}\n\n"
+                            )
+                        yield ("tick", candles)
+
+                # ── Symbol metadata ──
+                elif mtype == "symbol_resolved":
+                    p = payload.get("p")
+                    if isinstance(p, list) and len(p) >= 3:
+                        meta = p[2]
+                        if isinstance(meta, dict):
+                            name = (
+                                meta.get("local_description")
+                                or meta.get("description")
+                            )
+                            if name:
+                                yield ("company_name", name)
+
+                # ── Fundamentals: accumulate qsd, yield on quote_completed ──
+                elif mtype == "qsd":
+                    p = payload.get("p")
+                    if isinstance(p, list) and len(p) >= 2:
+                        second = p[1]
+                        if isinstance(second, dict):
+                            v = second.get("v")
+                            if isinstance(v, dict):
+                                quote_snapshot.update(v)
+
+                elif mtype == "quote_completed":
+                    if quote_snapshot:
+                        yield ("fundamentals", dict(quote_snapshot))
+
+    finally:
+        # ── CLEANUP: delete chart + quote sessions on ANY exit ──
+        # Runs when: handler breaks out of 'async for', generator GC'd,
+        # .aclose() called, or unhandled exception propagates.
+        # Best-effort: if the WS is dead, sends will fail silently.
+        try:
+            await send_to_tradingview(
+                ws, {"m": "chart_delete_session", "p": [chart_id]}, trace_file
+            )
+        except Exception:
+            pass
+        try:
+            await send_to_tradingview(
+                ws, {"m": "quote_delete_session", "p": [quote_id]}, trace_file
+            )
+        except Exception:
+            pass
+
+        if trace_file:
+            try:
+                trace_file.write(
+                    f"STREAM CLOSED: {provider_symbol} — sessions cleaned up\n\n"
+                )
+            except Exception:
+                pass

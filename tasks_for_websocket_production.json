@@ -1,0 +1,397 @@
+[
+  {
+    "id": "LIVE-01",
+    "component": "financial_data_etl/scraping_pipeline/tv_websocket_connection/call_execution/tradingview_ws.py",
+    "difficulty": "CRITICAL",
+    "description": "Create subscribe_ohlcv_stream(): an async generator that subscribes to a symbol on TradingView and STAYS connected, yielding live candle updates as they arrive. This is the Edge — the raw event source. Currently _request_ohlcv_and_fundamentals_impl exits after the first timescale_update. The new function keeps the chart session alive and continues to yield 'du' (data update) messages as TradingView pushes live bar ticks.",
+    "architecture_proposal": {
+      "function_signature": "async def subscribe_ohlcv_stream(session: Dict, provider_symbol: str, timeframe: str, n_initial: int) -> AsyncGenerator[Tuple[str, Any], None]",
+      "protocol_insight": "TradingView's protocol is inherently push-based. After create_series, the server sends an initial timescale_update with the requested N candles, then CONTINUES to push 'du' messages whenever the live bar's OHLCV values change. We've been ignoring these by exiting the recv loop early. The 'du' message has IDENTICAL structure to timescale_update in p[1].sds_1.s — our existing parse_ohlcv() works on both without modification.",
+      "yield_protocol": [
+        "First yield: ('seed', candles_list) — the initial timescale_update with N candles. This gives the handler enough data to populate the in-memory DataFrame.",
+        "Subsequent yields: ('tick', updated_candles) — each 'du' message parsed into [[ts,o,h,l,c,v], ...]. Typically contains exactly 1 bar (the live bar updating). During a new-bar-open event (e.g., midnight UTC for 1D), it may contain 2 bars (the closed bar + new open bar).",
+        "On fundamentals: ('fundamentals', snapshot_dict) — qsd messages merged into one yield when quote_completed arrives. Sent once after the initial seed, then never again unless re-requested."
+      ],
+      "implementation": [
+        "1. Send chart_create_session + resolve_symbol + create_series (same 3 sends as current code)",
+        "2. Send quote_create_session + quote_set_fields + quote_add_symbols (same 3 sends for fundamentals)",
+        "3. Enter infinite recv loop (replaces the 'while not done' pattern):",
+        "   a. message = await asyncio.wait_for(ws.recv(), timeout=RECV_TIMEOUT)",
+        "   b. Parse chunks via re.split(r'~m~\\d+~m~', message)",
+        "   c. Route by mtype:",
+        "      - 'timescale_update' → yield ('seed', parse_ohlcv(payload))",
+        "      - 'du' → yield ('tick', parse_ohlcv(payload))",
+        "      - 'symbol_resolved' → extract company_name (stored internally)",
+        "      - 'qsd' → merge into fundamentals snapshot",
+        "      - 'quote_completed' → yield ('fundamentals', snapshot)",
+        "   d. On asyncio.TimeoutError (30s no message) → yield ('heartbeat', None) and continue. During market closed hours, TV may go quiet. We don't want to kill the subscription.",
+        "   e. On ConnectionClosed → raise (caller handles reconnection)"
+      ],
+      "why_async_generator": "An async generator is the perfect abstraction for an event stream. The WS handler consumes it with 'async for event_type, data in stream:'. When the handler exits (client disconnect), the generator is garbage collected, and the chart session can be cleaned up in a finally block.",
+      "cleanup": "The generator wraps its body in try/finally. In finally: send chart_delete_session + quote_delete_session. This ensures TV server-side cleanup even on unexpected exits.",
+      "does_NOT_change": "The existing request_ohlcv_and_fundamentals() and request_batch_multiplexed() are untouched. They remain the fire-and-forget functions for the batch ETL. subscribe_ohlcv_stream is a NEW function that coexists alongside them."
+    },
+    "zombie_protection": "The STREAM_RECV_TIMEOUT (45s) prevents infinite hangs. If TV stops sending (server crash, network partition), the generator yields ('heartbeat', None) which the handler uses to send a keepalive to the client. If 5 consecutive heartbeats arrive with no data, the handler should assume TV is dead and close. The finally block always cleans up TV sessions.",
+    "status": "WIP"
+  },
+  {
+    "id": "LIVE-02",
+    "component": "financial_data_etl/api/live_state.py (NEW)",
+    "difficulty": "HIGH",
+    "description": "Create the LiveSymbolState class: the in-memory Pandas DataFrame container that holds the last 258 bars of historical OHLCV for a single symbol. This is the RAM-only compute substrate — the bridge between the Edge stream and the derived metrics. It handles two operations: initial seed (load 258 bars) and tick update (replace/append the live bar). It NEVER touches SQLite after the initial seed.",
+    "architecture_proposal": {
+      "class_structure": {
+        "class": "LiveSymbolState",
+        "fields": {
+          "symbol": "str",
+          "timeframe": "str",
+          "df": "pd.DataFrame — columns: [ts, open, high, low, close, volume]. Always sorted by ts ASC. Max 258 rows (enough for all derived metrics windows). Rows beyond 258 are trimmed from the head.",
+          "fundamentals": "dict — the raw fundamentals snapshot from TradingView qsd. Set once during seed, refreshed only on explicit request.",
+          "company_name": "str | None",
+          "last_tick_ts": "float — time.monotonic() of last tick update. Used for zombie detection.",
+          "tick_count": "int — total ticks processed since seed. Useful for observability."
+        }
+      },
+      "seed_method": {
+        "signature": "def seed(self, candles: List[List[float]], fundamentals: dict, company_name: str) -> None",
+        "logic": "Build df from candles list: pd.DataFrame(candles, columns=['ts','open','high','low','close','volume']). Sort by ts ASC. Keep only the last 258 rows. Store fundamentals and company_name. Reset tick_count to 0.",
+        "called_when": "After the first 'seed' event from subscribe_ohlcv_stream, MERGED with the historical 258 bars from SQLite. The TV seed gives us 3 fresh bars (including the live bar), the SQLite seed gives us the 255 historical bars before them."
+      },
+      "update_tick_method": {
+        "signature": "def update_tick(self, updated_candles: List[List[float]]) -> dict",
+        "logic": [
+          "1. For each candle in updated_candles:",
+          "   a. Find existing row with same ts → REPLACE (OHLCV values changed on the live bar)",
+          "   b. If ts not found → APPEND (new bar opened, e.g., market open of a new day)",
+          "2. Sort df by ts ASC, trim to 258 rows from tail",
+          "3. Increment tick_count, update last_tick_ts",
+          "4. Return the live candle dict: {ts, open, high, low, close, volume}"
+        ],
+        "pandas_implementation": "Use df.set_index('ts') for O(1) lookup. On update: df.loc[ts] = [o,h,l,c,v]. On append: pd.concat. Reset index after. This is ~0.1ms for 1 bar update on 258 rows.",
+        "critical_constraint": "The ts-based merge is EXACT. TradingView's 'du' message contains the exact same ts as the bar being updated. No fuzzy matching needed."
+      },
+      "compute_metrics_method": {
+        "signature": "def compute_metrics(self) -> dict",
+        "detail": "Delegates to the 3 pure compute functions from LIVE-03. Returns a unified dict: {performance: {...}, volatility: {...}, volume: {...}}. See LIVE-03 for the math extraction.",
+        "threading": "This method is called via loop.run_in_executor() because Pandas operations are CPU-bound. The DataFrame is COPIED before passing to the thread (df.copy()) to prevent concurrent mutation if a tick arrives during computation. The copy is ~12KB — negligible."
+      },
+      "memory_budget": "258 rows × 6 float64 columns = 12,384 bytes raw + ~100KB Pandas overhead ≈ 115KB per LiveSymbolState. 10 concurrent clients = 1.15MB. 100 clients = 11.5MB. RAM is never a concern."
+    },
+    "zombie_protection": "LiveSymbolState is owned by the WS handler coroutine. When the handler exits (client disconnect), the coroutine's local variables are garbage collected, including the LiveSymbolState and its DataFrame. No module-level references, no registry, no leak path. The last_tick_ts field enables the handler to detect stale state (no ticks for 5 minutes during market hours → TV connection is likely dead).",
+    "status": "PENDING"
+  },
+  {
+    "id": "LIVE-03",
+    "component": "financial_data_etl/api/live_compute.py (NEW)",
+    "difficulty": "MEDIUM",
+    "description": "Extract the PURE MATH from the 3 existing mega-batch runners (volatility_runner.py, price_performance_runner.py, volume_runner.py) into 3 stateless pure functions that operate on an in-memory DataFrame. No SQLite reads, no SQLite writes, no schema init. Input: DataFrame. Output: dict of latest metrics. These are the RAM-only compute kernels.",
+    "architecture_proposal": {
+      "functions": [
+        {
+          "name": "compute_performance_live(df: pd.DataFrame) -> dict",
+          "input": "DataFrame with columns [ts, close] — at least 253 rows for full 252-lag coverage",
+          "logic": "IDENTICAL math to price_performance_runner.py lines 70-74: grouped_close.shift(lag), df['close'] / safe_shifted - 1.0. But since we have ONE symbol, no groupby needed — direct .shift() on the single series. Extract only the LAST ROW's values.",
+          "output": "{ret_1d: float, ret_1w: float, ret_1m: float, ret_3m: float, ret_6m: float, ret_1y: float}",
+          "nan_handling": "Replace NaN with None in the output dict. Same pattern as runners: if val != val: row[key] = None"
+        },
+        {
+          "name": "compute_volatility_live(df: pd.DataFrame) -> dict",
+          "input": "DataFrame with columns [ts, high, low, close] — at least 253 rows",
+          "logic": "IDENTICAL math to volatility_runner.py lines 73-85: log_ret = np.log(close / close.shift(1)), rolling(window).std() * sqrt(252). Single symbol → no groupby. range_intraday = (high - low) / close. Extract LAST ROW.",
+          "output": "{range_intraday: float, vol_1w: float, vol_1m: float, vol_3m: float, vol_6m: float, vol_1y: float}",
+          "nan_handling": "Same NaN → None conversion"
+        },
+        {
+          "name": "compute_volume_live(df: pd.DataFrame) -> dict",
+          "input": "DataFrame with columns [ts, close, volume] — at least 201 rows",
+          "logic": "IDENTICAL math to volume_runner.py lines 60-70: volume_usd = close * volume, rolling(w).mean(), gap = volume_usd / sma - 1.0. Single symbol → no groupby. Extract LAST ROW.",
+          "output": "{volume_usd: float, vol_sma_20: float, ..., vol_gap_200: float}",
+          "nan_handling": "Same NaN → None conversion"
+        }
+      ],
+      "combined_function": {
+        "name": "compute_all_metrics_live(df: pd.DataFrame) -> dict",
+        "logic": "Calls all 3 compute functions on the same df. Returns {performance: {...}, volatility: {...}, volume: {...}}. This is the single entry point called by LiveSymbolState.compute_metrics().",
+        "performance": "For 258 rows × 1 symbol: performance ~0.3ms, volatility ~0.5ms (rolling std), volume ~0.3ms. Total: ~1.1ms. Imperceptible. No need for threading at this scale, but we use run_in_executor anyway because Pandas holds the GIL during C-level operations."
+      },
+      "mathematical_purity_guarantee": "The compute functions use the EXACT SAME constants (LAGS, VOL_WINDOWS, SMA_WINDOWS, ANNUALIZATION_FACTOR, ddof=1) imported from the existing runner modules. We import the constants, not duplicate them. If the batch runners change their math, the live compute changes identically.",
+      "does_NOT_change": "The 3 existing *_runner.py files are untouched. They remain the batch pipeline's compute layer. The live_compute.py functions are NEW parallel implementations that share constants but operate on in-memory DataFrames instead of SQLite."
+    },
+    "zombie_protection": "Pure functions have no state, no connections, no lifecycle. They execute and return. If the input DataFrame is garbage, they return NaN/None metrics — they never crash the handler.",
+    "status": "PENDING"
+  },
+  {
+    "id": "LIVE-04",
+    "component": "financial_data_etl/api/live_session_manager.py (NEW)",
+    "difficulty": "HIGH",
+    "description": "Create the LiveSessionManager: a FastAPI-scoped singleton that owns exactly ONE persistent TradingView WebSocket connection. All live WS handlers borrow this connection. When the active symbol changes (user switches), the manager tears down the old TV subscription and creates a new one — all on the same underlying WS connection.",
+    "architecture_proposal": {
+      "class": "LiveSessionManager",
+      "lifecycle": {
+        "init": "Created at FastAPI startup. Does NOT open a TV connection yet (lazy initialization).",
+        "first_subscribe": "On the first call to subscribe(), opens the TV WS connection via open_session(trace=False). Stores as self._session.",
+        "subsequent_subscribes": "Reuses the same self._session. Each subscribe() creates unique chart/quote session IDs (incrementing counter) on the existing WS connection.",
+        "symbol_switch": "Caller cleans up the old async generator (which triggers its finally block → chart_delete_session + quote_delete_session). Then calls subscribe() for the new symbol. Same underlying WS, new chart/quote sessions.",
+        "shutdown": "FastAPI shutdown hook calls manager.close() → close_session(self._session)."
+      },
+      "subscribe_method": {
+        "signature": "async def subscribe(self, symbol: str, provider_symbol: str, timeframe: str, n_initial: int) -> AsyncGenerator",
+        "logic": [
+          "1. Acquire self._lock (asyncio.Lock) — serializes session setup",
+          "2. If self._session is None → await open_session(trace=False)",
+          "3. Increment self._counter",
+          "4. Set session['chart_id'] = f'{base_chart_id}_{counter}'",
+          "5. Set session['quote_id'] = f'qs_live_{counter}'",
+          "6. Release lock",
+          "7. Return subscribe_ohlcv_stream(self._session, provider_symbol, timeframe, n_initial)"
+        ],
+        "why_lock": "open_session() is async and involves network I/O. Without a lock, two concurrent subscribe() calls could race on self._session initialization. The lock is held only during setup (~500ms for connection), not during the stream."
+      },
+      "reconnection": {
+        "strategy": "If subscribe_ohlcv_stream raises ConnectionClosed, the handler catches it, calls manager.reconnect(), then retries subscribe(). reconnect() closes the dead session and sets self._session = None. The next subscribe() call triggers a fresh open_session().",
+        "backoff": "reconnect() uses asyncio.sleep(1, 2, 4) exponential backoff (same as connect_to_tradingview's existing retry logic from BP-017)."
+      },
+      "concurrency_model": "V1: exactly 1 TV WS connection, 1 active subscription at a time. If multiple clients connect, they share the SAME TV subscription for the SAME symbol (last symbol wins). This is acceptable for the PoW demo. V2: multiple connections or multiplexed subscriptions per connection.",
+      "why_singleton": "TradingView rate-limits by IP. Multiple connections = multiple handshakes = faster ban. One persistent connection with session multiplexing is the safest approach."
+    },
+    "zombie_protection": {
+      "idle_timeout": "If no subscribe() call is made for 600s (10 minutes), a background task closes the TV connection entirely (self._session = None). This prevents a zombie TV connection from staying open overnight when nobody is watching.",
+      "keepalive": "While a subscription is active, the TV connection stays alive naturally (recv loop is running). When no subscription is active but idle_timeout hasn't elapsed, no keepalive is needed — TV connections survive minutes of silence.",
+      "memory": "The manager holds ONE session dict (~200 bytes) and ONE websocket object. Negligible."
+    },
+    "status": "PENDING"
+  },
+  {
+    "id": "LIVE-05",
+    "component": "financial_data_etl/api/live_seed.py (NEW)",
+    "difficulty": "MEDIUM",
+    "description": "Create the Seed layer: functions that query SQLite ONCE to load the historical data needed to populate the LiveSymbolState and send the initial full payload to the frontend. Two queries: (1) 258 bars of OHLCV for the metrics DataFrame, (2) full 4500 bars for the frontend chart. Both executed in a single connection, then the connection is closed. Disk is NEVER touched again for this client session.",
+    "architecture_proposal": {
+      "functions": [
+        {
+          "name": "load_historical_seed(symbol: str) -> dict",
+          "signature": "def load_historical_seed(symbol: str) -> dict",
+          "logic": [
+            "1. conn = get_connection()",
+            "2. Query 1 — FULL CHART DATA (for frontend):",
+            "   SELECT ts, open, high, low, close, volume FROM tv_candles_raw",
+            "   WHERE symbol=? AND timeframe='1d' AND is_partial=0",
+            "   ORDER BY ts ASC LIMIT 4500",
+            "   → chart_candles: List[List]",
+            "3. Query 2 — FUNDAMENTALS:",
+            "   SELECT symbol, as_of_ts, company_name, market_cap, pe_ttm, eps_ttm,",
+            "          shares_outstanding, sector, industry",
+            "   FROM fundamentals_snapshot WHERE symbol=?",
+            "   ORDER BY as_of_ts DESC LIMIT 1",
+            "   → fundamentals: dict",
+            "4. Query 3 — LATEST DERIVED METRICS (pre-computed by batch ETL):",
+            "   3 queries for performance_1d, volatility_1d, volume_1d",
+            "   (same SQL as the REST endpoints, copy from app.py)",
+            "   → metrics: {performance: {...}, volatility: {...}, volume: {...}}",
+            "5. conn.close()",
+            "6. Return {chart_candles, fundamentals, metrics}"
+          ],
+          "threading": "This function is synchronous (SQLite). Called via loop.run_in_executor(None, load_historical_seed, symbol) from the async WS handler. Connection is created and destroyed within the function — fully thread-safe.",
+          "performance": "5 indexed queries on SQLite WAL ≈ 5-15ms. One-time cost per client session."
+        }
+      ],
+      "seed_merge_strategy": {
+        "description": "The seed DataFrame for LiveSymbolState is built from TWO sources: (1) the last 258 bars from SQLite (historical), and (2) the first 'seed' event from subscribe_ohlcv_stream (3 fresh bars from TV). The TV bars may overlap with SQLite bars (same timestamps) or extend them (new bar opened since last batch ETL run).",
+        "merge_logic": [
+          "1. Start with SQLite's 258 bars as the base DataFrame",
+          "2. For each TV bar: if ts exists in df → REPLACE (TV has fresher OHLCV), if ts not found → APPEND (new bar)",
+          "3. Sort by ts ASC, trim to 258 from tail",
+          "4. This merged df becomes LiveSymbolState.df"
+        ],
+        "why_merge": "The batch ETL runs at market close. If a user connects during market hours, SQLite has yesterday's close but NOT today's live bar. TV gives us today's live bar. The merge ensures we have the full 258-bar window INCLUDING the live bar."
+      }
+    },
+    "zombie_protection": "Pure function. Opens/closes its own connection. No persistent state. If it fails (DB locked, missing table), it raises an exception that the WS handler catches and sends as an error frame to the client.",
+    "status": "PENDING"
+  },
+  {
+    "id": "LIVE-06",
+    "component": "financial_data_etl/api/app.py → @app.websocket('/ws/live/{symbol}')",
+    "difficulty": "CRITICAL",
+    "description": "The crown jewel: the FastAPI WebSocket endpoint that orchestrates the entire Seed & Edge flow. On connect: send the Seed (full historical payload from SQLite). Then enter the Edge loop: consume the TradingView async generator, update the in-memory DataFrame, recompute metrics, and stream lightweight tick payloads to the client. Handle symbol switching, disconnection, and all zombie scenarios.",
+    "architecture_proposal": {
+      "endpoint": "@app.websocket('/ws/live/{symbol}')",
+      "full_lifecycle": [
+        "1. await websocket.accept()",
+        "2. Resolve provider_symbol from catalog (e.g., AAPL → NASDAQ:AAPL)",
+        "3. SEED PHASE (one-time):",
+        "   a. seed_data = await loop.run_in_executor(None, load_historical_seed, symbol)",
+        "   b. await websocket.send_json({type: 'seed', ...seed_data}) — full chart + fundamentals + metrics",
+        "   c. state = LiveSymbolState(symbol, timeframe='1d')",
+        "   d. state.seed(chart_candles[-258:], fundamentals, company_name)",
+        "4. EDGE PHASE (continuous):",
+        "   a. stream = await session_manager.subscribe(symbol, provider_symbol, '1d', n_initial=3)",
+        "   b. Launch receive_task = asyncio.create_task(_listen_client(websocket, switch_event))",
+        "   c. async for event_type, data in stream:",
+        "      - if event_type == 'seed':",
+        "          state.merge_tv_seed(data)  # merge TV's 3 bars into the 258-bar df",
+        "      - if event_type == 'tick':",
+        "          live_candle = state.update_tick(data)",
+        "          metrics = await loop.run_in_executor(None, state.compute_metrics)",
+        "          payload = {type: 'tick', candle: live_candle, metrics: metrics, ts: time.time()}",
+        "          await websocket.send_json(payload)",
+        "      - if event_type == 'fundamentals':",
+        "          state.fundamentals = data",
+        "          await websocket.send_json({type: 'fundamentals', data: data})",
+        "      - if event_type == 'heartbeat':",
+        "          await websocket.send_json({type: 'heartbeat'})",
+        "      - if switch_event.is_set(): break  # symbol switch requested",
+        "   d. On break (symbol switch): cleanup stream, goto step 2 with new symbol",
+        "   e. On WebSocketDisconnect: clean exit"
+      ],
+      "symbol_switching_detail": {
+        "mechanism": "A concurrent _listen_client coroutine awaits websocket.receive_json(). When it receives {action: 'switch', symbol: 'TSLA'}, it sets switch_event (asyncio.Event) and stores the new symbol. The Edge loop checks switch_event after each tick. On set: break out of the async for, cleanup the old stream (triggers finally → TV session cleanup), then restart the Seed+Edge flow for the new symbol.",
+        "latency": "Symbol switch latency = time to next tick + seed query (~15ms) + TV subscribe (~500ms) ≈ <1s. The client sees the new symbol's full chart within 1 second of switching.",
+        "no_race_condition": "The switch_event is an asyncio.Event — thread-safe within the event loop. The _listen_client and the Edge loop are coroutines on the same event loop — no actual parallelism, just cooperative multitasking."
+      },
+      "payload_sizes": {
+        "seed_payload": "4500 candles × 6 floats × ~20 bytes JSON ≈ 540KB. Sent ONCE. Negligible for a WS connection.",
+        "tick_payload": "1 candle (6 floats) + 3 metric dicts (~20 fields total) ≈ 500 bytes. Sent every 1-3 seconds. Trivial bandwidth.",
+        "total_per_hour": "~1200 ticks × 500 bytes = 600KB/hour. During market hours only."
+      },
+      "event_loop_safety": "The FastAPI event loop NEVER blocks. SQLite I/O (seed) runs in executor. Pandas compute (metrics) runs in executor. TradingView recv() is native async. websocket.send_json() is native async. The only CPU work on the event loop is JSON serialization of the 500-byte tick payload — sub-microsecond."
+    },
+    "zombie_protection": {
+      "max_session_duration": "Hard TTL of 7200 seconds (2 hours). After 2 hours, send {type: 'session_expired'} and close. Frontend auto-reconnects if user is active.",
+      "idle_detection": "Track last_client_message_ts. If no client message (no symbol switches, no pings) for 300s (5 minutes), send {type: 'idle_warning'}. If still no response after 600s total, disconnect. This catches users who close the laptop lid without closing the tab.",
+      "heartbeat_death_detection": "If 5 consecutive 'heartbeat' events arrive from the TV stream (= 150 seconds of no market data), the handler assumes the market is closed or TV is dead. Downgrade to a check every 60s instead of blocking on recv(). If this persists for 30 minutes, disconnect entirely.",
+      "concurrent_session_limit": "Track active WS connections in a module-level set. Max 5 total (for PoW demo). Reject new connections with 429 if limit reached.",
+      "try_finally_guarantee": "The entire handler body is wrapped in try/finally. finally block: remove from active connections set, close the TV stream (triggers session cleanup), log disconnect event. No resource leak regardless of how the handler exits."
+    },
+    "status": "PENDING"
+  },
+  {
+    "id": "LIVE-07",
+    "component": "financial_data_etl/api/app.py → startup / shutdown hooks",
+    "difficulty": "LOW",
+    "description": "Wire the FastAPI application lifecycle: initialize the LiveSessionManager, load the asset catalog, pre-init schemas at startup. Clean shutdown of the TV connection at exit.",
+    "architecture_proposal": {
+      "startup": [
+        "1. app.state.catalog = load_assets_catalog() — cached for provider_symbol resolution",
+        "2. app.state.session_manager = LiveSessionManager() — lazy TV connection",
+        "3. init_performance_schema(), init_volatility_schema(), init_volume_schema() — idempotent, ensures tables exist for seed queries",
+        "4. app.state.active_connections = set() — tracks live WS handlers for concurrent limit"
+      ],
+      "shutdown": [
+        "1. await app.state.session_manager.close() — cleanly closes TV WS if open",
+        "2. For each active connection: send {type: 'server_shutdown'} and close"
+      ],
+      "implementation_note": "Use @app.on_event('startup') / @app.on_event('shutdown') or the modern Lifespan context manager. Both work. The lifespan approach is cleaner but either is fine for V1."
+    },
+    "zombie_protection": "Startup has no zombie risk. Shutdown hook is the final safety net — even if application-level zombie protection fails, the process exit guarantees all connections close.",
+    "status": "PENDING"
+  },
+  {
+    "id": "LIVE-08",
+    "component": "financial_data_etl/api/app.py → @app.get('/ws/stats')",
+    "difficulty": "LOW",
+    "description": "Monitoring endpoint that returns the state of all live WebSocket connections and the TradingView session pool. Essential for catching zombie connections in production.",
+    "architecture_proposal": {
+      "endpoint": "@app.get('/ws/stats')",
+      "response": {
+        "active_connections": "int — count of open WS handlers",
+        "connections_detail": [
+          {
+            "symbol": "AAPL",
+            "connected_at": "ISO timestamp",
+            "last_tick_at": "ISO timestamp",
+            "last_client_message_at": "ISO timestamp",
+            "tick_count": 1420,
+            "idle_mode": false
+          }
+        ],
+        "tv_session": {
+          "alive": true,
+          "connected_since": "ISO timestamp",
+          "total_subscribes": 47,
+          "last_subscribe_at": "ISO timestamp"
+        }
+      },
+      "implementation": "Each WS handler registers a metadata dict in app.state.active_connections on connect and removes it on disconnect. The /ws/stats endpoint reads this set. No lock needed — FastAPI runs on a single event loop thread."
+    },
+    "zombie_protection": "This endpoint IS the zombie detector. Ops team can poll it. Alert if: active_connections > 0 AND all last_tick_at > 5 minutes ago.",
+    "status": "PENDING"
+  },
+  {
+    "id": "LIVE-09",
+    "component": "financial_data_etl/api/app.py → security hardening",
+    "difficulty": "LOW",
+    "description": "Origin validation on WebSocket connections and optional API key for the PoW demo. Prevent unauthorized clients from consuming TradingView quota.",
+    "architecture_proposal": {
+      "origin_check": "In the WS handler, before accept(): validate the Origin header against a whitelist (our domain + localhost). Reject unknown origins with websocket.close(code=4003).",
+      "demo_token": "Optional query parameter: /ws/live/AAPL?token=xxx. If LIVE_DEMO_TOKEN env var is set, require it. Otherwise skip (dev mode). Simple string comparison, not JWT.",
+      "cors_tightening": "Change allow_origins from ['*'] to env-configurable whitelist for production. Keep '*' for local dev."
+    },
+    "zombie_protection": "Prevents unauthorized bots from opening zombie WS connections. Without origin validation, any website can connect to our WS and drain TV quota.",
+    "status": "PENDING"
+  },
+  {
+    "id": "LIVE-10",
+    "component": "Frontend (Genesis React app)",
+    "difficulty": "MEDIUM",
+    "description": "React WebSocket client that receives the Seed (full chart), then live Ticks (candle updates + metrics). Renders a live-updating candlestick chart and metrics dashboard.",
+    "architecture_proposal": {
+      "ws_client": {
+        "connect": "const ws = new WebSocket(`wss://${host}/ws/live/${symbol}`)",
+        "onmessage_routing": {
+          "seed": "Initialize the candlestick chart with 4500 bars. Populate the fundamentals panel and metrics cards. Show 'Live' indicator.",
+          "tick": "Update the last candle on the chart (or add a new one if ts is new). Update the metrics cards with fresh values. Flash the changed values green/red. Update 'Last ETL: Xms ago' counter.",
+          "fundamentals": "Update the fundamentals panel (rare event).",
+          "heartbeat": "Reset the 'connection alive' indicator. No UI change.",
+          "session_expired": "Show 'Session expired, reconnecting...' banner. Auto-reconnect.",
+          "idle_warning": "Show 'Still watching? Click to keep live updates' modal."
+        }
+      },
+      "symbol_switching": "On search/select: ws.send(JSON.stringify({action: 'switch', symbol: 'TSLA'})). Clear the current chart. Show loading spinner. Wait for the new 'seed' event to repopulate.",
+      "reconnection": "On ws.onclose: exponential backoff (1s, 2s, 4s, max 30s). Show 'Reconnecting...' overlay. On reconnect, full Seed is re-sent automatically.",
+      "chart_library": "lightweight-charts by TradingView (open-source, 45KB). Native candlestick rendering. updateData() method for live bar updates — exactly what our tick payload provides.",
+      "visibility_api": "document.addEventListener('visibilitychange', ...). If tab hidden for >2 minutes, close WS. On visible: reconnect. Cooperates with server-side idle detection."
+    },
+    "zombie_protection": "Client-side visibility API prevents zombie connections from background tabs. The 'idle_warning' modal gives the user a chance to stay connected before the server disconnects.",
+    "status": "PENDING"
+  },
+  {
+    "id": "LIVE-11",
+    "component": "Infrastructure → Uvicorn + Nginx deployment",
+    "difficulty": "MEDIUM",
+    "description": "Deploy configuration for long-lived WebSocket connections alongside the existing REST API and batch ETL cron.",
+    "architecture_proposal": {
+      "uvicorn": "uvicorn financial_data_etl.api.app:app --host 0.0.0.0 --port 8000 --workers 1 --ws-max-size 1048576. MUST be --workers 1: the LiveSessionManager is in-process state. Multiple workers would create independent TV connections with no coordination.",
+      "nginx": {
+        "websocket_proxy": "proxy_http_version 1.1; proxy_set_header Upgrade $http_upgrade; proxy_set_header Connection 'upgrade';",
+        "timeouts": "proxy_read_timeout 7200s; proxy_send_timeout 7200s; — matches the 2-hour max session duration.",
+        "ssl": "TLS termination at Nginx. wss:// to the client, ws:// internally to uvicorn."
+      },
+      "batch_etl_coexistence": "The batch ETL (cron) uses tv_websocket_scraper.py with its own WS pool (6 connections). The live endpoint uses LiveSessionManager with its own single connection. They are completely independent TradingView sessions. SQLite WAL handles concurrent reads/writes between them. No coordination needed."
+    },
+    "zombie_protection": "Nginx proxy_read_timeout (7200s) is the infrastructure-level kill switch. Even if all application-level protection fails, Nginx terminates the connection after 2 hours. systemd Restart=always ensures the process recovers from crashes.",
+    "status": "PENDING"
+  },
+  {
+    "id": "LIVE-12",
+    "component": "Integration testing",
+    "difficulty": "LOW",
+    "description": "End-to-end test script that validates the full Seed & Edge flow: connect, receive seed, receive ticks, switch symbols, verify metrics math, disconnect cleanly.",
+    "architecture_proposal": {
+      "test_script": "python -m financial_data_etl.api.test_live_ws",
+      "test_cases": [
+        "1. Connect to ws://localhost:8000/ws/live/AAPL",
+        "2. Receive 'seed' event: verify chart_candles has 4500 bars, fundamentals non-null, metrics populated",
+        "3. If market open: wait for 'tick' event within 30s. Verify candle has ts/o/h/l/c/v. Verify metrics dict has all expected keys.",
+        "4. If market closed: wait for 'heartbeat' within 60s.",
+        "5. Send {action: 'switch', symbol: 'MSFT'}: receive new 'seed' for MSFT within 2s",
+        "6. Verify old AAPL ticks stop, new MSFT ticks start",
+        "7. Disconnect: verify /ws/stats shows 0 active connections",
+        "8. Stress: open 5 concurrent connections, verify all receive seeds, verify 6th is rejected (concurrent limit)"
+      ],
+      "math_validation": "For test case 3: independently compute volatility from the seed candles using compute_volatility_live(). Compare with the metrics in the tick payload. Must match to 6 decimal places."
+    },
+    "zombie_protection": "The test itself validates zombie protection: test 7 verifies clean disconnect, test 8 verifies concurrent limits, and an extended test (leave connection open for 5 min with no interaction) verifies idle detection kicks in.",
+    "status": "PENDING"
+  }
+]
