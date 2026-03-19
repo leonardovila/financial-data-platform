@@ -263,7 +263,7 @@
       "concurrent_session_limit": "Track active WS connections in a module-level set. Max 5 total (for PoW demo). Reject new connections with 429 if limit reached.",
       "try_finally_guarantee": "The entire handler body is wrapped in try/finally. finally block: remove from active connections set, close the TV stream (triggers session cleanup), log disconnect event. No resource leak regardless of how the handler exits."
     },
-    "status": "PENDING"
+    "status": "CLOSED"
   },
   {
     "id": "LIVE-07",
@@ -284,7 +284,7 @@
       "implementation_note": "Use @app.on_event('startup') / @app.on_event('shutdown') or the modern Lifespan context manager. Both work. The lifespan approach is cleaner but either is fine for V1."
     },
     "zombie_protection": "Startup has no zombie risk. Shutdown hook is the final safety net — even if application-level zombie protection fails, the process exit guarantees all connections close.",
-    "status": "PENDING"
+    "status": "CLOSED (folded into LIVE-06 — lifespan context manager in app.py)"
   },
   {
     "id": "LIVE-08",
@@ -315,7 +315,7 @@
       "implementation": "Each WS handler registers a metadata dict in app.state.active_connections on connect and removes it on disconnect. The /ws/stats endpoint reads this set. No lock needed — FastAPI runs on a single event loop thread."
     },
     "zombie_protection": "This endpoint IS the zombie detector. Ops team can poll it. Alert if: active_connections > 0 AND all last_tick_at > 5 minutes ago.",
-    "status": "PENDING"
+    "status": "CLOSED (folded into LIVE-06 — /ws/stats endpoint in app.py)"
   },
   {
     "id": "LIVE-09",

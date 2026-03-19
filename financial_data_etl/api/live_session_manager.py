@@ -104,12 +104,15 @@ class LiveSessionManager:
                     self._watchdog_task = asyncio.create_task(self._idle_watchdog())
 
             # Assign unique session IDs for this subscription
+            import random
+            import string
             self._counter += 1
+            rand_str = ''.join(random.choices(string.ascii_lowercase + string.digits, k=12))
             stream_session = {
                 "ws": self._session["ws"],
                 "trace_file": self._session.get("trace_file"),
-                "chart_id": f"{self._base_chart_id}_live_{self._counter}",
-                "quote_id": f"qs_live_{self._counter}",
+                "chart_id": f"cs_{rand_str}",
+                "quote_id": f"qs_{rand_str}",
             }
             self._last_subscribe_ts = time.monotonic()
             self._total_subscribes += 1

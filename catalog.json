@@ -1,4 +1,10 @@
 {
+  "BTC": {
+    "provider_symbol": {
+      "tradingview": "BINANCE:BTCUSDT"
+    },
+    "ticker": "BTC"
+  },
   "URNU": {
     "provider_symbol": {
       "tradingview": "LSE:URNU"
