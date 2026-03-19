@@ -159,7 +159,7 @@
       "keepalive": "While a subscription is active, the TV connection stays alive naturally (recv loop is running). When no subscription is active but idle_timeout hasn't elapsed, no keepalive is needed — TV connections survive minutes of silence.",
       "memory": "The manager holds ONE session dict (~200 bytes) and ONE websocket object. Negligible."
     },
-    "status": "PENDING"
+    "status": "WIP"
   },
   {
     "id": "LIVE-05",
