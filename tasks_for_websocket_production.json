@@ -118,7 +118,7 @@
       "does_NOT_change": "The 3 existing *_runner.py files are untouched. They remain the batch pipeline's compute layer. The live_compute.py functions are NEW parallel implementations that share constants but operate on in-memory DataFrames instead of SQLite."
     },
     "zombie_protection": "Pure functions have no state, no connections, no lifecycle. They execute and return. If the input DataFrame is garbage, they return NaN/None metrics — they never crash the handler.",
-    "status": "PENDING"
+    "status": "CLOSED"
   },
   {
     "id": "LIVE-04",
