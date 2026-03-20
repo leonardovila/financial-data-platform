@@ -1,0 +1,383 @@
+[
+  {
+    "id": "FRONT-001",
+    "component": "src/types/ws.ts",
+    "difficulty": "LOW",
+    "description": "TypeScript type definitions for every backend WebSocket payload. Defines the contract between the Python backend and the React frontend. Every subsequent ticket imports from this file.",
+    "architecture_proposal": {
+      "types_to_define": [
+        "SeedCandle: [ts: number, open: number, high: number, low: number, close: number, volume: number]",
+        "SeedPayload: { type: 'seed', symbol: string, chart_candles: SeedCandle[], company_name: string | null, fundamentals: FundamentalsData | null, metrics: { performance: PerformanceMetrics | null, volatility: VolatilityMetrics | null, volume: VolumeMetrics | null } }",
+        "TickPayload: { type: 'tick', candle: CandleDict, metrics: { performance: PerformanceMetrics, volatility: VolatilityMetrics, volume: VolumeMetrics }, ts: number }",
+        "CandleDict: { ts: number, open: number, high: number, low: number, close: number, volume: number }",
+        "FundamentalsData: { symbol, as_of_ts, company_name, market_cap, pe_ttm, eps_ttm, shares_outstanding, sector, industry }",
+        "PerformanceMetrics: { ret_1d, ret_1w, ret_1m, ret_3m, ret_6m, ret_1y } — all number | null",
+        "VolatilityMetrics: { range_intraday, vol_1w, vol_1m, vol_3m, vol_6m, vol_1y } — all number | null",
+        "VolumeMetrics: { volume_usd, vol_sma_20/50/100/200, vol_gap_20/50/100/200 } — all number | null",
+        "HeartbeatPayload: { type: 'heartbeat' }",
+        "CompanyNamePayload: { type: 'company_name', name: string }",
+        "FundamentalsPayload: { type: 'fundamentals', data: FundamentalsData }",
+        "ErrorPayload: { type: 'error', message: string }",
+        "SessionExpiredPayload: { type: 'session_expired' }",
+        "WsMessage: discriminated union of all payload types via 'type' field",
+        "SwitchCommand: { action: 'switch', symbol: string }",
+        "PingCommand: { action: 'ping' }"
+      ],
+      "design_notes": "Use discriminated union (tagged union) on the 'type' field so TypeScript narrows automatically in switch/case. Export everything. Zero runtime cost — pure types."
+    },
+    "responsive_strategy": "N/A — Data layer. Pure TypeScript types, zero DOM involvement.",
+    "status": "CLOSED"
+  },
+  {
+    "id": "FRONT-002",
+    "component": "src/lib/theme.ts + src/index.css (Tailwind v4)",
+    "difficulty": "LOW",
+    "description": "Design system: color palette, font stack, Tailwind CSS v4 theme tokens, and responsive breakpoint system. The aesthetic DNA of 'Bloomberg Terminal on Acid' — designed mobile-first from the root.",
+    "architecture_proposal": {
+      "palette": {
+        "bg_primary": "#0a0a0a (true black canvas)",
+        "bg_panel": "#111111 (card/panel)",
+        "bg_hover": "#1a1a1a",
+        "border": "#222222 (subtle grid lines)",
+        "text_primary": "#e0e0e0 (muted white — NOT pure white)",
+        "text_muted": "#666666",
+        "accent_green": "#00ff00 (neon green — gains, active, live)",
+        "accent_red": "#ff0044 (blood red — losses, alerts)",
+        "accent_blue": "#0088ff (neutral highlight — info, links)",
+        "accent_yellow": "#ffcc00 (warnings, partial data)"
+      },
+      "fonts": "JetBrains Mono via Google Fonts CDN. Fallback: 'Roboto Mono', 'Fira Code', monospace. Applied globally via Tailwind v4 @theme { --font-mono: ... }.",
+      "tailwind_v4_setup": [
+        "@import 'tailwindcss' in index.css",
+        "Use @theme directive (v4 native) for custom CSS variables: --color-bg, --color-neon, etc.",
+        "NO tailwind.config.js needed — Tailwind v4 uses CSS-first config"
+      ],
+      "theme_ts": "Export constants for Lightweight Charts colorspace (crosshair, grid, candles up/down, volume histogram). These map to the palette above."
+    },
+    "responsive_strategy": {
+      "approach": "Mobile-first CSS variables with viewport-aware typography scale.",
+      "font_scaling": "Base font: 11px on mobile (≤640px), 12px on tablet (641-1024px), 13px on desktop (≥1025px). Controlled via @media blocks in index.css setting --font-size-base. All components use rem/em relative to this root — one knob controls the entire density.",
+      "touch_targets": "Define --touch-min: 44px for mobile tap targets (Apple HIG), --touch-min: 28px for desktop hover targets. Components use min-h-[var(--touch-min)] to guarantee accessibility on both.",
+      "safe_areas": "Apply env(safe-area-inset-bottom) on the StatusBar and env(safe-area-inset-top) on the SymbolSearch header for iPhone notch/Dynamic Island respect."
+    },
+    "status": "CLOSED"
+  },
+  {
+    "id": "FRONT-003",
+    "component": "src/stores/wsStore.ts (Zustand)",
+    "difficulty": "HIGH",
+    "description": "The WebSocket Client Manager. A Zustand store that owns the WebSocket lifecycle: connect, disconnect, reconnect, symbol switching. Distributes parsed payloads to the rest of the app via Zustand slices.",
+    "architecture_proposal": {
+      "store_shape": {
+        "socket": "WebSocket | null",
+        "status": "'disconnected' | 'connecting' | 'connected' | 'reconnecting'",
+        "currentSymbol": "string (the active symbol)",
+        "seedData": "SeedPayload | null (full seed, set once per symbol)",
+        "latestTick": "TickPayload | null (most recent tick — transient, replaced every 1-3s)",
+        "companyName": "string | null",
+        "fundamentals": "FundamentalsData | null",
+        "tickHistory": "TickPayload[] (last 50 ticks for the Tick Stack)",
+        "metrics": "{ performance, volatility, volume } (latest computed metrics)",
+        "connectionError": "string | null",
+        "isMarketOpen": "boolean (derived: true if ticks are flowing, false if only heartbeats)"
+      },
+      "actions": {
+        "connect(symbol)": "Opens ws://host/ws/live/{symbol}. Sets status='connecting'. Attaches onopen, onmessage, onclose, onerror handlers.",
+        "disconnect()": "Closes the socket. Resets state.",
+        "switchSymbol(newSymbol)": "Sends {action:'switch', symbol} to the existing socket. Resets seedData, tickHistory, metrics. Does NOT close/reopen the socket.",
+        "handleMessage(msg)": "Switch on msg.type → seed: setSeedData, tick: setLatestTick + pushToTickHistory + setMetrics, company_name: setCompanyName, fundamentals: setFundamentals, heartbeat: noop (or set isMarketOpen=false), error: setConnectionError, session_expired: disconnect + reconnect."
+      },
+      "reconnection_strategy": "On unexpected close (code !== 1000): exponential backoff (1s, 2s, 4s, max 16s). On session_expired: immediate reconnect. On idle_disconnect: reconnect only if document.visibilityState === 'visible'.",
+      "performance_critical": "Use Zustand's transient update pattern for latestTick. The tick handler should NOT cause a full store re-render. Components subscribe to individual slices: useWsStore(s => s.latestTick). The tickHistory array is capped at 50 entries with unshift + slice to avoid unbounded growth."
+    },
+    "responsive_strategy": {
+      "approach": "N/A — Data layer. But with two mobile-critical behavioral adaptations.",
+      "visibility_api": "Listen to document.visibilityState. When the tab/app goes to background (user switches apps on iPhone), PAUSE reconnection attempts to save battery and mobile data. Resume only when visible again.",
+      "reduced_tick_history": "On mobile (detected via navigator.maxTouchPoints > 0 or matchMedia), reduce tickHistory cap from 50 to 20 entries. Less RAM, fewer DOM nodes in the TickStack."
+    },
+    "status": "PENDING"
+  },
+  {
+    "id": "FRONT-004",
+    "component": "src/components/Chart.tsx",
+    "difficulty": "HIGH",
+    "description": "The main candlestick chart powered by TradingView Lightweight Charts v5. Initialized with 4500 candles from the Seed, then surgically updated bar-by-bar on each tick. Must handle symbol switches (full data replacement) without recreating the chart instance.",
+    "architecture_proposal": {
+      "initialization": [
+        "useRef<HTMLDivElement> for the container. useRef<IChartApi> for the chart instance.",
+        "createChart() once on mount with dark theme options from FRONT-002's theme.ts.",
+        "chart.addCandlestickSeries() + chart.addHistogramSeries() (volume overlay).",
+        "Subscribe to wsStore.seedData — when it changes (new symbol), call series.setData(seedCandles.map(toChartFormat))."
+      ],
+      "live_tick_updates": [
+        "Subscribe to wsStore.latestTick (transient slice).",
+        "On each tick: candleSeries.update({ time: tick.candle.ts, open, high, low, close }). volumeSeries.update(...).",
+        "Lightweight Charts .update() is O(1) — it replaces or appends the last bar. Perfect for our 'du' semantics."
+      ],
+      "candle_format_conversion": "Backend sends {ts: unixEpoch}. Lightweight Charts expects {time: unixEpoch} (UTCTimestamp). Conversion: { time: candle.ts as UTCTimestamp, open, high, low, close }. Volume series uses { time: candle.ts, value: candle.volume, color: close >= open ? greenAlpha : redAlpha }.",
+      "symbol_switch": "On new seedData: series.setData(newCandles). Chart auto-adjusts scale. No destroy/recreate needed.",
+      "resize_handling": "ResizeObserver on the container div → chart.resize(width, height). Cleanup on unmount.",
+      "styling": {
+        "background": "#0a0a0a",
+        "grid_lines": "#1a1a1a",
+        "candle_up": "#00ff00 (neon green body + wick)",
+        "candle_down": "#ff0044 (blood red body + wick)",
+        "crosshair": "#666666",
+        "volume_up": "rgba(0, 255, 0, 0.15)",
+        "volume_down": "rgba(255, 0, 68, 0.15)"
+      }
+    },
+    "responsive_strategy": {
+      "approach": "The chart is the hero on every viewport. It must NEVER have a fixed height — it fills available space.",
+      "mobile_portrait": "Chart takes 100% width, height = 55vh (leaving room for MetricsGrid tabs and StatusBar below). The TickStack sidebar does NOT exist in mobile portrait — it moves to a bottom sheet.",
+      "mobile_landscape": "Chart takes 100% width, height = calc(100vh - StatusBar - SymbolHeader). Full immersive chart. MetricsGrid and TickStack are hidden — accessible only via a floating toggle button (bottom-right, 40x40px).",
+      "tablet": "Chart takes 65% width (TickStack takes 35%). Identical to desktop but with slightly larger touch-friendly crosshair hitbox.",
+      "desktop_4k": "Chart takes 70% width. Lightweight Charts' pixel-ratio handling ensures crisp rendering on HiDPI. No blurry upscaling.",
+      "resize_observer": "A single ResizeObserver on the chart container div calls chart.resize(entry.contentRect.width, entry.contentRect.height). This handles orientation changes, split-view on iPad, and browser resize seamlessly — zero manual breakpoint logic in the chart itself.",
+      "touch_interactions": "Lightweight Charts has built-in touch support (pinch-to-zoom, pan). No extra work. Disable the crosshair tooltip on mobile (it covers the candles) — show price in the SymbolSearch header instead."
+    },
+    "status": "PENDING"
+  },
+  {
+    "id": "FRONT-005",
+    "component": "src/components/TickStack.tsx",
+    "difficulty": "MEDIUM",
+    "description": "The brutalist, high-performance live order-flow style scrolling feed. Shows the last N ticks in a vertically stacked list with GPU-accelerated CSS transforms. Each row: timestamp, price, delta, volume. Color-coded green/red.",
+    "architecture_proposal": {
+      "data_source": "useWsStore(s => s.tickHistory) — last 50 (desktop) or 20 (mobile) entries.",
+      "rendering": [
+        "Fixed-height container with overflow-hidden (no scrollbar).",
+        "Each tick row is a <div> with transform: translateY(). New items enter at Y=0 and push existing items down.",
+        "CSS will-change: transform on the container for GPU compositing.",
+        "Each row shows: time (HH:MM:SS), close price (formatted $X,XXX.XX), price delta (close - prevClose, green/red), volume delta."
+      ],
+      "performance_optimization": [
+        "The array is capped at N items. On new tick: [newTick, ...prev.slice(0, N-1)].",
+        "Use React.memo on each tick row with ts as key. Only the new row renders.",
+        "Zustand transient updates ensure only TickStack re-renders on tick, not the entire app.",
+        "CSS animation: @keyframes slideIn { from { opacity: 0; transform: translateY(-32px); } to { opacity: 1; transform: translateY(0); } } with duration 150ms."
+      ],
+      "styling": "Monospace font. Dense rows (h-7 or 28px). Alternating bg: transparent / #111111. Price green (#00ff00) if delta > 0, red (#ff0044) if delta < 0, muted (#666666) if delta === 0."
+    },
+    "responsive_strategy": {
+      "approach": "The TickStack transforms from a persistent sidebar on desktop into a collapsible bottom sheet on mobile.",
+      "desktop": "Permanent right sidebar, 30% width, full height. Always visible. 50 rows, dense (h-7, 28px per row). Shows all 4 columns: time, price, delta, volume.",
+      "mobile_portrait": "Completely hidden by default. Accessible via a floating 'FEED' pill button anchored bottom-right (above StatusBar). Tapping it opens a bottom sheet (CSS transform: translateY) covering the bottom 50% of the screen. The sheet shows 20 tick rows with only 3 columns (time, price, delta — volume is dropped to fit 375px width). Swipe-down or tap the pill again to dismiss. The sheet uses position:fixed + z-50 so it overlays the chart.",
+      "mobile_landscape": "Hidden. Accessible via the same floating toggle. Opens as a narrow (40% width) slide-in panel from the right edge. 20 rows, 3 columns.",
+      "tablet": "Persistent right sidebar (35% width). Identical to desktop layout.",
+      "row_density": "On mobile, rows grow to h-9 (36px) to meet 44px touch target guidelines. On desktop, rows stay h-7 (28px) for maximum information density.",
+      "no_horizontal_scroll": "Tick row layout uses flex with truncation (text-ellipsis) on the price column. The 3-column mobile layout is: time (flex-none w-16) | price (flex-1 min-w-0) | delta (flex-none w-16). Zero overflow."
+    },
+    "status": "PENDING"
+  },
+  {
+    "id": "FRONT-006",
+    "component": "src/components/MetricsGrid.tsx + MetricCard.tsx",
+    "difficulty": "MEDIUM",
+    "description": "The information-dense metrics dashboard. Three visual blocks: Performance (returns), Volatility (risk), and Volume (liquidity). Each block displays the latest computed values from the live stream. Values flash green/red on change.",
+    "architecture_proposal": {
+      "data_source": "useWsStore(s => s.metrics) — the { performance, volatility, volume } object from the latest tick payload.",
+      "MetricCard_component": {
+        "props": "{ title: string, data: Record<string, number | null>, formatters: Record<string, (v: number) => string> }",
+        "rendering": "Title bar (e.g., 'PERFORMANCE') + grid of key-value rows. Keys are labels like 'Ret 1D', 'Ret 1W'. Values are formatted numbers.",
+        "formatting": {
+          "returns": "Sign + percentage: '+2.34%' / '-1.56%'. Green if positive, red if negative.",
+          "volatility": "Percentage: '18.42%'. Neutral color (muted) — vol is vol, not good/bad.",
+          "volume": "Dollar format with suffixes: '$1.2B', '$345M'. Gap values as percentage with sign."
+        },
+        "null_handling": "Display '—' in muted gray for null/undefined values (insufficient data)."
+      },
+      "flash_on_change": "On value change: briefly apply a bg flash (green or red pulse, 300ms CSS transition on background-color). Achieved via a useEffect comparing prev vs current values. CSS class 'flash-green' / 'flash-red' with animation-duration: 300ms.",
+      "styling": "Panels: bg-[#111111], border border-[#222222], rounded-none (brutalist — no rounded corners). Title: text-xs uppercase tracking-widest text-[#666666]. Values: text-sm font-mono."
+    },
+    "responsive_strategy": {
+      "approach": "Horizontal tab navigation on mobile instead of vertical stacking. Information density is preserved by showing ONE full card at a time, not three squished cards.",
+      "desktop": "CSS Grid: grid-cols-3. All three MetricCards visible simultaneously in a horizontal row below the chart. Each card is a column with 6 key-value rows.",
+      "mobile_portrait": "A tabbed interface. Three tab buttons at the top ('PERF' | 'VOL' | 'RISK') — only 1 card visible at a time. Active tab has a neon green bottom-border-2. Swipe left/right to switch tabs (CSS scroll-snap on a flex container with overflow-x-auto + snap-x snap-mandatory + children with snap-start min-w-full). This gives native iOS momentum scrolling with zero JavaScript. The key-value rows inside each card use a 2-column grid (3 items per row, label+value) to fit more data vertically: grid-cols-2 on mobile (2 metrics per row) vs grid-cols-1 on desktop (1 metric per row, more vertical space).",
+      "mobile_landscape": "grid-cols-3 (same as desktop). Landscape gives enough width for all three panels side-by-side. Reduced vertical height per card.",
+      "tablet": "grid-cols-3 (same as desktop).",
+      "no_horizontal_scroll": "The scroll-snap tab container has overflow-x:auto with -webkit-overflow-scrolling:touch but the INNER card content never exceeds its card width. Labels truncate with text-ellipsis. Numbers are right-aligned mono."
+    },
+    "status": "PENDING"
+  },
+  {
+    "id": "FRONT-007",
+    "component": "src/components/FundamentalsBar.tsx",
+    "difficulty": "LOW",
+    "description": "A compact horizontal bar displaying fundamental data: market cap, P/E, EPS, shares outstanding, sector, industry. Updated once on seed and on live fundamentals events.",
+    "architecture_proposal": {
+      "data_source": "useWsStore(s => s.fundamentals).",
+      "layout": "Single horizontal flex row. Each item: label (text-xs muted) above value (text-sm mono). Separator: thin vertical border between items.",
+      "formatting": {
+        "market_cap": "$X.XXB / $X.XXM (abbreviate with B/M/K suffix)",
+        "pe_ttm": "XX.Xx (2 decimal places)",
+        "eps_ttm": "$X.XX",
+        "shares_outstanding": "X.XXB / X.XXM",
+        "sector_industry": "Plain text, truncated with ellipsis if too long"
+      },
+      "null_handling": "If fundamentals is null (symbol has no fundamentals, e.g., crypto), hide the entire bar. Don't show empty cards."
+    },
+    "responsive_strategy": {
+      "approach": "Horizontally scrollable ticker tape on mobile. The bar NEVER wraps to multiple lines — it scrolls.",
+      "desktop": "All 6 items fit in a single row (flex-row, gap-6). No scroll needed on ≥1024px.",
+      "mobile": "overflow-x-auto with -webkit-overflow-scrolling:touch. Items are flex-shrink-0 with fixed min-width (80px each). The user swipe-scrolls horizontally to see all fundamentals. A subtle gradient fade on the right edge (::after pseudo-element with linear-gradient from transparent to bg_primary) signals there's more content to scroll. This is the Bloomberg terminal pattern — professionals expect horizontal scroll on dense data bars.",
+      "tablet": "Same as desktop (items fit in one row).",
+      "no_vertical_impact": "The bar is always exactly h-10 (40px). It never grows, never wraps, never pushes the chart down unpredictably."
+    },
+    "status": "PENDING"
+  },
+  {
+    "id": "FRONT-008",
+    "component": "src/components/SymbolSearch.tsx",
+    "difficulty": "MEDIUM",
+    "description": "The symbol search/switch component. A command-palette style input (Ctrl+K or tap) that fetches available symbols from GET /symbols, provides autocomplete, and triggers wsStore.switchSymbol() on selection.",
+    "architecture_proposal": {
+      "trigger": "A compact header showing current symbol + company name. Clicking it or pressing Ctrl+K opens the search overlay.",
+      "symbol_fetching": "On mount: fetch GET /symbols from the REST API. Cache in a local ref. The list is static (changes only after batch ETL runs).",
+      "autocomplete": "Simple substring filter on the symbol list. No fuzzy matching needed — symbols are short uppercase strings. Show max 10 results.",
+      "selection": "On Enter or tap: call wsStore.switchSymbol(selectedSymbol). Close the overlay. The Zustand store sends {action:'switch', symbol} over the existing WS.",
+      "styling": "Full-screen semi-transparent overlay (#0a0a0a/80). Centered input with neon green border on focus. Results list: monospace, dense rows, highlight on hover/active."
+    },
+    "responsive_strategy": {
+      "approach": "Full-screen takeover on mobile. The search is THE primary navigation — it must feel like a native app search.",
+      "desktop": "Centered modal (max-w-md, 448px). Input at top, results list below. Keyboard navigation (arrow keys + Enter). Escape to close.",
+      "mobile": "Full-screen overlay (position:fixed inset-0). Input pinned to top with auto-focus (opens the keyboard immediately). Results list fills remaining height with scroll. Each result row is h-12 (48px) for fat-finger-proof tap targets. On selection, the overlay dismisses and the keyboard closes via input.blur().",
+      "trigger_adaptation": "Desktop: Ctrl+K shortcut shown as a hint badge next to the symbol. Mobile: no shortcut hint (no keyboard). Instead, the entire symbol header area is a large tap target (h-12, full-width) with a subtle search icon (magnifying glass) to signal interactivity.",
+      "keyboard_handling": "On mobile, the virtual keyboard pushes the viewport. Use visualViewport API or position the input at the top (not centered) so results remain visible above the keyboard. The overlay uses flex-col: input (flex-none) at top, results (flex-1 overflow-y-auto) below."
+    },
+    "status": "PENDING"
+  },
+  {
+    "id": "FRONT-009",
+    "component": "src/components/StatusBar.tsx",
+    "difficulty": "LOW",
+    "description": "A thin bottom status bar showing: connection status (dot: green=connected, yellow=reconnecting, red=disconnected), current symbol, tick count, last tick timestamp, and latency indicator.",
+    "architecture_proposal": {
+      "data_sources": [
+        "useWsStore(s => s.status) — connection state",
+        "useWsStore(s => s.currentSymbol)",
+        "useWsStore(s => s.latestTick?.ts) — derive 'last update X seconds ago'",
+        "Tick count: derived from tickHistory.length or a counter in store"
+      ],
+      "layout": "Fixed bottom bar, bg-[#0a0a0a], border-t border-[#222222]. Flex row with items spaced evenly. Left: status dot + 'LIVE' / 'RECONNECTING' / 'OFFLINE'. Center: symbol. Right: tick count + latency.",
+      "live_clock": "A useEffect with setInterval(1000) that updates 'last tick Xs ago' relative to the latest tick timestamp. Resets on each tick."
+    },
+    "responsive_strategy": {
+      "approach": "Always visible on every viewport. Content density reduces on mobile — fewer labels, same critical info.",
+      "desktop": "h-6 (24px). Shows: [dot LIVE] [AAPL] [Ticks: 142] [Last: 3s ago]. All items visible.",
+      "mobile": "h-7 (28px, slightly taller for touch). Abbreviate: [dot] [AAPL] [142] [3s]. Drop the text labels ('Ticks:', 'Last:'), keep only the values. The dot color (green/yellow/red) provides connection status without text. Add padding-bottom: env(safe-area-inset-bottom) for iPhone home indicator.",
+      "no_overflow": "All items use flex-shrink-0 with truncation. The center symbol is the only item that can truncate (text-ellipsis) if the symbol name is absurdly long."
+    },
+    "status": "PENDING"
+  },
+  {
+    "id": "FRONT-010",
+    "component": "src/App.tsx + src/layouts/Dashboard.tsx",
+    "difficulty": "MEDIUM",
+    "description": "The main dashboard layout. Stitches all components into the final Bloomberg-on-Acid layout. Initializes the WebSocket connection on mount. Responsive from DNA — mobile-first CSS grid that scales UP to 4K.",
+    "architecture_proposal": {
+      "initialization": "useEffect on mount: wsStore.connect(defaultSymbol ?? 'BTC'). Cleanup on unmount: wsStore.disconnect().",
+      "no_loading_spinner": "While seed is loading, show the empty dark layout with a single pulsing neon green dot in the chart area. The instant the seed arrives, everything populates simultaneously."
+    },
+    "responsive_strategy": {
+      "approach": "CSS Grid with named template areas. ONE grid definition per breakpoint. Zero absolute positioning hacks. The grid is the single source of spatial truth.",
+      "mobile_portrait_layout": {
+        "breakpoint": "< 640px (default, mobile-first)",
+        "grid": "grid-template-rows: auto 55vh auto auto; grid-template-cols: 1fr;",
+        "areas": "'header' 'chart' 'metrics' 'status'",
+        "ascii": [
+          "┌──────────────────────────┐",
+          "│ SymbolSearch (h-12)      │ ← tap to search",
+          "├──────────────────────────┤",
+          "│                          │",
+          "│   Chart (55vh)           │ ← full width, touch zoom/pan",
+          "│                          │",
+          "├──────────────────────────┤",
+          "│ Fundamentals (h-10)     │ ← horizontal scroll tape",
+          "├──────────────────────────┤",
+          "│ [PERF] [VOL] [RISK]     │ ← tabbed, swipe to switch",
+          "│  ┌──────────────────┐    │",
+          "│  │ Active MetricCard│    │",
+          "│  └──────────────────┘    │",
+          "├──────────────────────────┤",
+          "│ StatusBar (h-7)         │ ← safe-area-inset-bottom",
+          "└──────────────────────────┘",
+          "",
+          "TickStack: floating bottom-sheet (hidden by default, toggle via pill button)"
+        ],
+        "scroll": "The entire area below the header scrolls vertically (chart + fundamentals + metrics). The chart has a fixed height (55vh) so it never collapses to nothing. overflow-y-auto on the main container."
+      },
+      "mobile_landscape_layout": {
+        "breakpoint": "< 640px AND orientation: landscape",
+        "grid": "grid-template-rows: auto 1fr auto; grid-template-cols: 1fr;",
+        "areas": "'header' 'chart' 'status'",
+        "behavior": "Full immersive chart mode. MetricsGrid and FundamentalsBar hide. Only the chart fills the screen. A floating toggle button (bottom-right, 40x40) opens MetricsGrid as an overlay."
+      },
+      "tablet_layout": {
+        "breakpoint": "≥ 640px AND < 1280px",
+        "grid": "grid-template-rows: auto auto 1fr auto auto; grid-template-cols: 65fr 35fr;",
+        "areas": "'header header' 'fund fund' 'chart ticks' 'metrics metrics' 'status status'",
+        "ascii": [
+          "┌────────────────────┬─────────────┐",
+          "│ SymbolSearch       │             │",
+          "├────────────────────┴─────────────┤",
+          "│ FundamentalsBar                  │",
+          "├────────────────────┬─────────────┤",
+          "│                    │             │",
+          "│ Chart (65%)        │ TickStack   │",
+          "│                    │ (35%)       │",
+          "├────────────────────┴─────────────┤",
+          "│ MetricsGrid (3 cols)             │",
+          "├──────────────────────────────────┤",
+          "│ StatusBar                        │",
+          "└──────────────────────────────────┘"
+        ]
+      },
+      "desktop_layout": {
+        "breakpoint": "≥ 1280px",
+        "grid": "grid-template-rows: auto auto 1fr auto auto; grid-template-cols: 70fr 30fr;",
+        "areas": "'header header' 'fund fund' 'chart ticks' 'metrics metrics' 'status status'",
+        "ascii": [
+          "┌──────────────────────────────┬──────────────┐",
+          "│ SymbolSearch (Ctrl+K)        │              │",
+          "├──────────────────────────────┴──────────────┤",
+          "│ FundamentalsBar (full row)                   │",
+          "├──────────────────────────────┬──────────────┤",
+          "│                              │              │",
+          "│    Chart (70%)               │  TickStack   │",
+          "│    4K crisp, HiDPI aware     │  (30%)       │",
+          "│                              │  50 rows     │",
+          "│                              │  dense h-7   │",
+          "├──────────────────────────────┴──────────────┤",
+          "│ MetricsGrid (3 equal cols)                   │",
+          "├─────────────────────────────────────────────┤",
+          "│ StatusBar (h-6)                              │",
+          "└─────────────────────────────────────────────┘"
+        ],
+        "4k_note": "At ≥2560px, consider increasing TickStack to 40% width and showing expanded metric labels. But V1 ships with the 70/30 split for all desktop sizes."
+      },
+      "implementation": "Use Tailwind v4 responsive prefixes: default (mobile) → sm: (≥640px tablet) → lg: (≥1024px) → xl: (≥1280px desktop). The grid is defined in Dashboard.tsx with className='grid grid-rows-[auto_55vh_auto_auto] grid-cols-1 sm:grid-rows-[auto_auto_1fr_auto_auto] sm:grid-cols-[65fr_35fr] xl:grid-cols-[70fr_30fr]'. Named grid-area classes on each child.",
+      "viewport_height": "Use h-dvh (dynamic viewport height) on the root container, NOT h-screen. dvh accounts for mobile browser chrome (Safari's address bar, bottom toolbar) that steals 80-100px from 100vh. This prevents the StatusBar from being hidden behind the iOS bottom bar.",
+      "orientation_change": "ResizeObserver on the root container handles all transitions. No manual window.addEventListener('resize'). The CSS grid reflows automatically — the chart's ResizeObserver fires, Lightweight Charts resizes, done."
+    },
+    "status": "PENDING"
+  },
+  {
+    "id": "FRONT-011",
+    "component": "src/lib/formatters.ts",
+    "difficulty": "LOW",
+    "description": "Shared formatting utilities: currency ($1,234.56), percentage (+2.34%), large numbers ($1.2B), timestamps (HH:MM:SS), and delta arrows. Used by MetricsGrid, TickStack, FundamentalsBar.",
+    "architecture_proposal": {
+      "functions": [
+        "formatCurrency(val: number, decimals?: number): string — '$1,234.56'",
+        "formatLargeNumber(val: number): string — '$1.2B', '$345M', '$12.5K'",
+        "formatPercent(val: number | null): string — '+2.34%', '-1.56%', '—'",
+        "formatTimestamp(unixTs: number): string — 'HH:MM:SS' in local timezone",
+        "formatDate(unixTs: number): string — 'YYYY-MM-DD'",
+        "signClass(val: number | null): string — 'text-green' | 'text-red' | 'text-muted'"
+      ],
+      "design": "Pure functions, zero dependencies. Intl.NumberFormat for locale-aware number formatting. Cached formatter instances for performance."
+    },
+    "responsive_strategy": "N/A — Data layer. Pure formatting functions with zero DOM awareness. The responsive adaptation (e.g., showing '$1.2B' vs '$1,200,000,000') is already handled by formatLargeNumber — the compact format is correct for ALL viewports."
+  }
+]
