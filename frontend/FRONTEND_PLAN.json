@@ -224,7 +224,7 @@
       "tablet": "Same as desktop (items fit in one row).",
       "no_vertical_impact": "The bar is always exactly h-10 (40px). It never grows, never wraps, never pushes the chart down unpredictably."
     },
-    "status": "PENDING"
+    "status": "CLOSED"
   },
   {
     "id": "FRONT-008",
