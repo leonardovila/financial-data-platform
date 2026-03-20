@@ -328,7 +328,7 @@
       "cors_tightening": "Change allow_origins from ['*'] to env-configurable whitelist for production. Keep '*' for local dev."
     },
     "zombie_protection": "Prevents unauthorized bots from opening zombie WS connections. Without origin validation, any website can connect to our WS and drain TV quota.",
-    "status": "PENDING"
+    "status": "CLOSE"
   },
   {
     "id": "LIVE-10",
