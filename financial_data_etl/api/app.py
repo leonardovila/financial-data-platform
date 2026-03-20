@@ -346,6 +346,41 @@ async def _validate_ws_security(websocket: WebSocket) -> bool:
     return True
 
 
+def _safe_float(val) -> float | None:
+    """Cast to float, return None if not a valid number."""
+    if val is None:
+        return None
+    try:
+        f = float(val)
+        if f != f:  # NaN check
+            return None
+        return f
+    except (TypeError, ValueError):
+        return None
+
+
+def _normalize_fundamentals(raw: dict, symbol: str) -> dict:
+    """
+    Normalize TV raw quote fields to the frontend FundamentalsData contract.
+    TV sends: market_cap_basic, price_earnings_ttm, earnings_per_share_basic_ttm, etc.
+    Frontend expects: market_cap, pe_ttm, eps_ttm, etc. — all numerics as float.
+    """
+    return {
+        "symbol": symbol,
+        "as_of_ts": int(time.time()),
+        "company_name": raw.get("local_description") or raw.get("description"),
+        "market_cap": _safe_float(raw.get("market_cap_basic") or raw.get("market_cap_calc")),
+        "pe_ttm": _safe_float(raw.get("price_earnings_ttm")),
+        "eps_ttm": _safe_float(raw.get("earnings_per_share_basic_ttm")),
+        "shares_outstanding": _safe_float(
+            raw.get("total_shares_outstanding_current")
+            or raw.get("total_shares_outstanding_calculated")
+        ),
+        "sector": raw.get("sector"),
+        "industry": raw.get("industry"),
+    }
+
+
 def _resolve_provider(catalog: dict, symbol: str) -> str:
     """Resolve symbol → provider_symbol (e.g., AAPL → NASDAQ:AAPL)."""
     sym = symbol.upper()
@@ -524,10 +559,13 @@ async def ws_live(websocket: WebSocket, symbol: str):
                         })
 
                     elif event_type == "fundamentals":
-                        state.fundamentals = data
+                        # TV sends raw keys (market_cap_basic, price_earnings_ttm, etc.)
+                        # Normalize to the frontend contract (market_cap, pe_ttm, etc.)
+                        normalized = _normalize_fundamentals(data, current_symbol)
+                        state.fundamentals = normalized
                         await websocket.send_json({
                             "type": "fundamentals",
-                            "data": data,
+                            "data": normalized,
                         })
 
                     elif event_type == "heartbeat":

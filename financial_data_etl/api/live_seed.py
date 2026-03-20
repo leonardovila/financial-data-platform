@@ -15,9 +15,39 @@ from typing import Dict, Any, List, Optional
 from financial_data_etl.api.db import get_connection
 
 
+def _safe_float(val) -> float | None:
+    """Cast to float, return None if not a valid number."""
+    if val is None:
+        return None
+    try:
+        f = float(val)
+        if f != f:  # NaN
+            return None
+        return f
+    except (TypeError, ValueError):
+        return None
+
+
+# Fields that MUST be numeric floats in the JSON payload
+_NUMERIC_FIELDS = {
+    "market_cap", "pe_ttm", "eps_ttm", "shares_outstanding",
+    "ret_1d", "ret_1w", "ret_1m", "ret_3m", "ret_6m", "ret_1y",
+    "range_intraday", "vol_1w", "vol_1m", "vol_3m", "vol_6m", "vol_1y",
+    "volume_usd", "vol_sma_20", "vol_sma_50", "vol_sma_100", "vol_sma_200",
+    "vol_gap_20", "vol_gap_50", "vol_gap_100", "vol_gap_200",
+}
+
+
 def _row_to_dict(row: sqlite3.Row) -> Dict[str, Any]:
-    """Convert a sqlite3.Row to a plain dict."""
-    return {k: row[k] for k in row.keys()}
+    """Convert a sqlite3.Row to a plain dict, casting numeric fields to float."""
+    d: Dict[str, Any] = {}
+    for k in row.keys():
+        v = row[k]
+        if k in _NUMERIC_FIELDS:
+            d[k] = _safe_float(v)
+        else:
+            d[k] = v
+    return d
 
 
 def load_historical_seed(symbol: str) -> Dict[str, Any]:
