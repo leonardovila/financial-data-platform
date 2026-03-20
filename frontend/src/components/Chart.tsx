@@ -128,38 +128,40 @@ export default function Chart() {
     };
   }, []);
 
-  // ── Seed: full data replacement on new symbol ──
+  // ── Data Subscriptions (Seed & Tick) ──
   useEffect(() => {
-    return useWsStore.subscribe(
-      (state) => state.seedData,
-      (seedData) => {
-        if (!seedData || !candleSeriesRef.current || !volumeSeriesRef.current)
-          return;
+    const unsub = useWsStore.subscribe((state, prevState) => {
+      
+      // 1. Handle Seed Data (cuando cambiamos de símbolo o carga inicial)
+      if (state.seedData && state.seedData !== prevState.seedData) {
+        if (!candleSeriesRef.current || !volumeSeriesRef.current) return;
 
-        const candles = seedData.chart_candles;
-        if (candles.length === 0) return;
+        const raw = state.seedData.chart_candles;
+        if (raw.length === 0) return;
 
-        candleSeriesRef.current.setData(candles.map(seedToCandle));
-        volumeSeriesRef.current.setData(candles.map(seedToVolume));
+        // Sanitize: deduplicate by ts (keep last), sort ascending
+        const dedupMap = new Map<number, SeedCandle>();
+        for (const c of raw) {
+          dedupMap.set(c[0], c); 
+        }
+        const clean = Array.from(dedupMap.values()).sort((a, b) => a[0] - b[0]);
 
-        // Fit content to show all candles, then scroll to the latest
+        candleSeriesRef.current.setData(clean.map(seedToCandle));
+        volumeSeriesRef.current.setData(clean.map(seedToVolume));
+
         chartRef.current?.timeScale().fitContent();
       }
-    );
-  }, []);
 
-  // ── Tick: O(1) bar update ──
-  useEffect(() => {
-    return useWsStore.subscribe(
-      (state) => state.latestTick,
-      (tick) => {
-        if (!tick || !candleSeriesRef.current || !volumeSeriesRef.current)
-          return;
+      // 2. Handle Transient Tick (cuando llega un nuevo precio en vivo)
+      if (state.latestTick && state.latestTick !== prevState.latestTick) {
+        if (!candleSeriesRef.current || !volumeSeriesRef.current) return;
 
-        candleSeriesRef.current.update(tickToCandle(tick.candle));
-        volumeSeriesRef.current.update(tickToVolume(tick.candle));
+        candleSeriesRef.current.update(tickToCandle(state.latestTick.candle));
+        volumeSeriesRef.current.update(tickToVolume(state.latestTick.candle));
       }
-    );
+    });
+
+    return unsub; // Limpieza al desmontar
   }, []);
 
   return (
