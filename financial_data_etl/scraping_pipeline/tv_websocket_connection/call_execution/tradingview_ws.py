@@ -219,6 +219,15 @@ async def _request_ohlcv_and_fundamentals_impl(
             trace_file.write("RECEIVE RAW:\n")
             trace_file.write(message + "\n\n")
 
+        # ── TV KEEPALIVE: echo ~h~N pings immediately ──
+        for ping_match in re.finditer(r"~h~\d+", message):
+            ping = ping_match.group(0)
+            pong = f"~m~{len(ping)}~m~{ping}"
+            try:
+                await ws.send(pong)
+            except Exception:
+                pass
+
         for chunk in re.split(r"~m~\d+~m~", message)[1:]:
             if not chunk.strip():
                 continue
@@ -417,6 +426,15 @@ async def request_batch_multiplexed(
             trace_file.write("RECEIVE RAW:\n")
             trace_file.write(message + "\n\n")
 
+        # ── TV KEEPALIVE: echo ~h~N pings immediately ──
+        for ping_match in re.finditer(r"~h~\d+", message):
+            ping = ping_match.group(0)
+            pong = f"~m~{len(ping)}~m~{ping}"
+            try:
+                await ws.send(pong)
+            except Exception:
+                pass
+
         for chunk in re.split(r"~m~\d+~m~", message)[1:]:
             if not chunk.strip():
                 continue
@@ -613,6 +631,19 @@ async def subscribe_ohlcv_stream(
             if trace_file:
                 trace_file.write("RECEIVE RAW:\n")
                 trace_file.write(message + "\n\n")
+
+            # ── TV KEEPALIVE: echo ~h~N pings immediately ──
+            # TradingView sends periodic pings (format: ~m~L~m~~h~N).
+            # Failure to echo = TV closes the connection with 1000 (OK).
+            for ping_match in re.finditer(r"~h~\d+", message):
+                ping = ping_match.group(0)
+                pong = f"~m~{len(ping)}~m~{ping}"
+                try:
+                    await ws.send(pong)
+                    if trace_file:
+                        trace_file.write(f"PING-PONG: echoed {ping}\n\n")
+                except Exception:
+                    pass
 
             for chunk in re.split(r"~m~\d+~m~", message)[1:]:
                 if not chunk.strip():

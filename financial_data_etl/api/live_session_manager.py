@@ -89,7 +89,22 @@ class LiveSessionManager:
 
         # ── SETUP PHASE (under lock) ──
         async with self._lock:
-            # Lazy init: open TV connection on first subscribe
+            # Check if existing session is dead (TV closed gracefully or network drop)
+            if self._session is not None:
+                ws = self._session.get("ws")
+                # websockets: .open is False once close frame exchanged or connection lost
+                if ws is None or (hasattr(ws, "open") and not ws.open):
+                    logger.warning("TV session is dead (ws.open=False), resetting for reconnect")
+                    try:
+                        await close_session(self._session)
+                    except Exception:
+                        pass
+                    self._session = None
+                    self._base_chart_id = None
+                    self._connected_since = None
+                    self._reconnect_count += 1
+
+            # Lazy init: open TV connection on first subscribe (or after reconnect)
             if self._session is None:
                 logger.info("Opening TradingView WebSocket connection (lazy init)")
                 self._session = await open_session(trace=False)
