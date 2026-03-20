@@ -145,3 +145,8 @@ body {
   background: linear-gradient(to right, transparent, var(--color-bg));
   pointer-events: none;
 }
+
+/* ── Hide TradingView Attribution Logo ── */
+#tv-attr-logo {
+  display: none !important;
+}
