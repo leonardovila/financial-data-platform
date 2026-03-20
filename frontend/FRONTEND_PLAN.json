@@ -248,7 +248,7 @@
       "mobile": "Full-width header bar, h-12. Idle: symbol (left, text-lg bold) + price (right). Company name hidden (insufficient width). Active: full-width input, font-size 16px (prevents iOS zoom on focus). Dropdown results use h-11 (44px) rows for tap targets. Dropdown overlays the chart (z-50). On selection: input.blur() closes the virtual keyboard.",
       "no_layout_shift": "The header bar has a FIXED height on each breakpoint (h-12 mobile, h-10 desktop). It never changes height between idle and active states. The dropdown is position:absolute and does not push content down."
     },
-    "status": "PENDING"
+    "status": "CLOSED"
   },
   {
     "id": "FRONT-009",
@@ -271,7 +271,7 @@
       "mobile": "h-7 (28px, slightly taller for touch). Abbreviate: [dot] [AAPL] [142] [3s]. Drop the text labels ('Ticks:', 'Last:'), keep only the values. The dot color (green/yellow/red) provides connection status without text. Add padding-bottom: env(safe-area-inset-bottom) for iPhone home indicator.",
       "no_overflow": "All items use flex-shrink-0 with truncation. The center symbol is the only item that can truncate (text-ellipsis) if the symbol name is absurdly long."
     },
-    "status": "PENDING"
+    "status": "CLOSED"
   },
   {
     "id": "FRONT-010",
