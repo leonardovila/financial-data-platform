@@ -198,7 +198,7 @@
       "tablet": "grid-cols-3 (same as desktop).",
       "no_horizontal_scroll": "The scroll-snap tab container has overflow-x:auto with -webkit-overflow-scrolling:touch but the INNER card content never exceeds its card width. Labels truncate with text-ellipsis. Numbers are right-aligned mono."
     },
-    "status": "PENDING"
+    "status": "CLOSED"
   },
   {
     "id": "FRONT-007",
