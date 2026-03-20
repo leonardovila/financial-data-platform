@@ -16,7 +16,9 @@ import sqlite3
 import time
 import asyncio
 import logging
+import os
 from contextlib import asynccontextmanager
+from urllib.parse import parse_qs
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -43,6 +45,29 @@ IDLE_WARN_TIMEOUT = 300       # 5 min without client message → idle warning
 IDLE_DISCONNECT_TIMEOUT = 600 # 10 min without client message → disconnect
 MAX_CONSECUTIVE_HEARTBEATS = 5  # 5 × 45s = 225s of no TV data → assume dead
 
+# ──────────────────────────────────────────────────────────────────────────────
+# SECURITY CONFIG (LIVE-09)
+# ──────────────────────────────────────────────────────────────────────────────
+_DEBUG = os.environ.get("DEBUG", "").lower() in ("1", "true", "yes")
+
+# ALLOWED_ORIGINS: comma-separated whitelist. Defaults to dev-friendly list.
+_ALLOWED_ORIGINS_RAW = os.environ.get(
+    "ALLOWED_ORIGINS",
+    "http://localhost:3000,http://localhost:5173,http://127.0.0.1:3000,http://127.0.0.1:5173",
+)
+ALLOWED_ORIGINS = [o.strip() for o in _ALLOWED_ORIGINS_RAW.split(",") if o.strip()]
+
+# WS Origin validation: extracted hostnames for fast lookup
+_WS_ALLOWED_HOSTS = {"localhost", "127.0.0.1"}
+for _orig in ALLOWED_ORIGINS:
+    # Extract host from "http(s)://host(:port)"
+    _h = _orig.split("://", 1)[-1].split(":")[0].split("/")[0]
+    if _h:
+        _WS_ALLOWED_HOSTS.add(_h)
+
+# Optional demo token — if set, WS connections must pass ?token=xxx
+LIVE_DEMO_TOKEN = os.environ.get("LIVE_DEMO_TOKEN")
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # LIFECYCLE: startup + shutdown (LIVE-07 folded in)
@@ -65,7 +90,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="financial-data-etl api", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"] if _DEBUG else ALLOWED_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -272,6 +297,55 @@ def ws_stats():
 #   4. ZOMBIE: hard TTL (2h), idle detection (5min), heartbeat death (5×45s)
 # ══════════════════════════════════════════════════════════════════════════════
 
+async def _validate_ws_security(websocket: WebSocket) -> bool:
+    """
+    Pre-accept security gate for WebSocket connections (LIVE-09).
+    Returns True if the connection is authorized, False if rejected.
+
+    Checks:
+      1. Origin header against _WS_ALLOWED_HOSTS whitelist
+      2. Demo token (if LIVE_DEMO_TOKEN env var is set)
+
+    In DEBUG mode, origin validation is skipped.
+    """
+    client_host = websocket.client.host if websocket.client else "unknown"
+
+    # ── ORIGIN VALIDATION ──
+    if not _DEBUG:
+        origin = websocket.headers.get("origin", "")
+        if origin:
+            # Extract hostname from "http(s)://host(:port)"
+            origin_host = origin.split("://", 1)[-1].split(":")[0].split("/")[0]
+        else:
+            # No Origin header — browser WS always sends one; absence means
+            # non-browser client. Allow only if from localhost.
+            origin_host = client_host
+
+        if origin_host not in _WS_ALLOWED_HOSTS:
+            logger.warning(
+                "SECURITY: WS rejected — invalid origin '%s' from %s",
+                origin, client_host,
+            )
+            await websocket.close(code=4003, reason="Origin not allowed")
+            return False
+
+    # ── DEMO TOKEN ──
+    if LIVE_DEMO_TOKEN:
+        # Parse token from query string: /ws/live/AAPL?token=xxx
+        qs = parse_qs(str(websocket.scope.get("query_string", b""), "utf-8"))
+        provided_token = qs.get("token", [None])[0]
+
+        if provided_token != LIVE_DEMO_TOKEN:
+            logger.warning(
+                "SECURITY: WS rejected — invalid/missing token from %s (origin: %s)",
+                client_host, websocket.headers.get("origin", "none"),
+            )
+            await websocket.close(code=4001, reason="Invalid or missing token")
+            return False
+
+    return True
+
+
 def _resolve_provider(catalog: dict, symbol: str) -> str:
     """Resolve symbol → provider_symbol (e.g., AAPL → NASDAQ:AAPL)."""
     sym = symbol.upper()
@@ -309,6 +383,10 @@ async def _listen_client(
 
 @app.websocket("/ws/live/{symbol}")
 async def ws_live(websocket: WebSocket, symbol: str):
+    # ── SECURITY GATE (LIVE-09) ──
+    if not await _validate_ws_security(websocket):
+        return
+
     # ── CONNECTION GATE ──
     if len(app.state.active_connections) >= MAX_CONNECTIONS:
         await websocket.close(code=4029, reason="Too many connections")
