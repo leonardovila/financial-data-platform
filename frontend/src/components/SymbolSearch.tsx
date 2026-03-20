@@ -1,11 +1,10 @@
 // ──────────────────────────────────────────────────────────────────────────────
 // FRONT-008: SymbolSearch — persistent inline header bar
 //
-// Idle:   [🔍 BTC   Bitcoin   $67,432.10 ▲+1.23%]
-// Active: [Search symbol...________________________] + dropdown overlay
+// Idle:   [🔍 BTC — Bitcoin   $67,432.10 ▲+1.23%]
+// Active: [Search ticker or company...____________] + dropdown overlay
 //
-// Zero modals. Zero Ctrl+K. Zero cognitive load.
-// The bar IS the identity display AND the navigation input.
+// During switch (seedData=null): shows pendingSymbolDisplay ("AAPL — Apple Inc")
 // ──────────────────────────────────────────────────────────────────────────────
 
 import { useState, useRef, useEffect, useCallback } from "react";
@@ -15,9 +14,15 @@ import { formatCurrency, signClass } from "../lib/formatters";
 const API_BASE =
   import.meta.env.VITE_API_URL ?? `${window.location.origin}`;
 
+interface SymbolEntry {
+  symbol: string;
+  name: string | null;
+}
+
 export default function SymbolSearch() {
   const currentSymbol = useWsStore((s) => s.currentSymbol);
   const companyName = useWsStore((s) => s.companyName);
+  const pendingSymbolDisplay = useWsStore((s) => s.pendingSymbolDisplay);
   const latestTick = useWsStore((s) => s.latestTick);
   const seedData = useWsStore((s) => s.seedData);
   const switchSymbol = useWsStore((s) => s.switchSymbol);
@@ -25,7 +30,7 @@ export default function SymbolSearch() {
   const [active, setActive] = useState(false);
   const [query, setQuery] = useState("");
   const [highlighted, setHighlighted] = useState(0);
-  const [symbols, setSymbols] = useState<string[]>([]);
+  const [symbols, setSymbols] = useState<SymbolEntry[]>([]);
 
   const inputRef = useRef<HTMLInputElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -34,11 +39,17 @@ export default function SymbolSearch() {
   useEffect(() => {
     fetch(`${API_BASE}/symbols`)
       .then((r) => r.json())
-      .then((data: string[]) => setSymbols(data))
-      .catch(() => {}); // silent fail — user can still type manually
+      .then((data: SymbolEntry[] | string[]) => {
+        if (data.length > 0 && typeof data[0] === "string") {
+          setSymbols((data as string[]).map((s) => ({ symbol: s, name: null })));
+        } else {
+          setSymbols(data as SymbolEntry[]);
+        }
+      })
+      .catch(() => {});
   }, []);
 
-  // ── Derived: live price from latest tick or seed ──
+  // ── Derived: live price ──
   const livePrice = latestTick?.candle.close ?? null;
   const prevPrice =
     latestTick && seedData?.chart_candles?.length
@@ -47,17 +58,32 @@ export default function SymbolSearch() {
   const priceDelta =
     livePrice !== null && prevPrice !== null ? livePrice - prevPrice : null;
 
-  // ── Filtered results ──
-  const filtered = query.length > 0
-    ? symbols
-        .filter((s) => s.toUpperCase().includes(query.toUpperCase()))
-        .slice(0, 8)
-    : [];
+  // ── Derived: display text for idle state ──
+  // During switch (seedData=null): show pendingSymbolDisplay
+  // After seed arrives: show currentSymbol + companyName from live stream
+  const isLoading = !seedData && !!currentSymbol;
+  const displaySymbol = currentSymbol || "—";
+  const displayCompany = isLoading ? null : companyName;
+  const displayPending = isLoading ? pendingSymbolDisplay : null;
 
-  // ── Selection handler ──
+  // ── Filtered results (case-insensitive, search ticker OR company name) ──
+  const filtered =
+    query.length > 0
+      ? symbols
+          .filter((e) => {
+            const q = query.toLowerCase();
+            return (
+              e.symbol.toLowerCase().includes(q) ||
+              (e.name?.toLowerCase().includes(q) ?? false)
+            );
+          })
+          .slice(0, 8)
+      : [];
+
+  // ── Selection: pass both symbol and company name to store ──
   const selectSymbol = useCallback(
-    (sym: string) => {
-      switchSymbol(sym);
+    (sym: string, name?: string | null) => {
+      switchSymbol(sym, name);
       setActive(false);
       setQuery("");
       setHighlighted(0);
@@ -77,9 +103,9 @@ export default function SymbolSearch() {
     } else if (e.key === "Enter") {
       e.preventDefault();
       if (filtered.length > 0) {
-        selectSymbol(filtered[highlighted]);
+        const entry = filtered[highlighted];
+        selectSymbol(entry.symbol, entry.name);
       } else if (query.trim()) {
-        // Direct symbol entry (not in cached list — try anyway)
         selectSymbol(query.trim().toUpperCase());
       }
     } else if (e.key === "Escape") {
@@ -93,7 +119,10 @@ export default function SymbolSearch() {
   useEffect(() => {
     if (!active) return;
     function handleClick(e: MouseEvent) {
-      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+      if (
+        containerRef.current &&
+        !containerRef.current.contains(e.target as Node)
+      ) {
         setActive(false);
         setQuery("");
       }
@@ -102,32 +131,27 @@ export default function SymbolSearch() {
     return () => document.removeEventListener("mousedown", handleClick);
   }, [active]);
 
-  // ── Reset highlighted index when filtered results change ──
   useEffect(() => {
     setHighlighted(0);
   }, [query]);
 
-  // ── Activate ──
   function activate() {
     setActive(true);
-    // Defer focus to next frame so the input is rendered
     requestAnimationFrame(() => inputRef.current?.focus());
   }
 
   return (
     <div ref={containerRef} className="relative z-50">
-      {/* ── THE BAR: fixed height, zero layout shift ── */}
       <div
         className={[
           "flex items-center w-full border-b border-[var(--color-border)]",
-          "h-12 sm:h-10", // touch-friendly mobile, compact desktop
+          "h-12 sm:h-10",
           "bg-[var(--color-bg)] px-3 gap-3",
           !active ? "cursor-pointer" : "",
         ].join(" ")}
         onClick={!active ? activate : undefined}
       >
         {active ? (
-          /* ── ACTIVE: search input ── */
           <div className="flex items-center w-full gap-2">
             <SearchIcon />
             <input
@@ -136,11 +160,10 @@ export default function SymbolSearch() {
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               onKeyDown={handleKeyDown}
-              placeholder="Search symbol..."
+              placeholder="Search ticker or company..."
               className={[
                 "flex-1 bg-transparent outline-none font-mono",
                 "text-[var(--color-text)] placeholder:text-[var(--color-muted)]",
-                // 16px on mobile prevents iOS auto-zoom on focus
                 "text-[16px] sm:text-sm",
               ].join(" ")}
               autoComplete="off"
@@ -158,24 +181,27 @@ export default function SymbolSearch() {
             </button>
           </div>
         ) : (
-          /* ── IDLE: symbol + company + price ── */
           <>
             <SearchIcon />
 
-            {/* Symbol */}
-            <span className="font-mono font-bold text-sm sm:text-base text-[var(--color-text)] shrink-0">
-              {currentSymbol || "—"}
-            </span>
-
-            {/* Company name — hidden on mobile (insufficient width) */}
-            {companyName && (
-              <span className="hidden sm:block flex-1 min-w-0 truncate text-xs text-[var(--color-muted)]">
-                {companyName}
+            {/* Symbol + Company (or pending display during switch) */}
+            <div className="flex items-center gap-1.5 flex-1 min-w-0">
+              <span className="font-mono font-bold text-sm sm:text-base text-[var(--color-text)] shrink-0">
+                {displaySymbol}
               </span>
-            )}
-
-            {/* Spacer on mobile */}
-            <div className="flex-1 sm:hidden" />
+              {displayPending && (
+                <span className="truncate text-xs text-[var(--color-yellow)] animate-pulse">
+                  {displayPending.includes("—")
+                    ? displayPending.split("—").slice(1).join("—").trim()
+                    : "Loading..."}
+                </span>
+              )}
+              {displayCompany && (
+                <span className="truncate text-xs text-[var(--color-muted)]">
+                  — {displayCompany}
+                </span>
+              )}
+            </div>
 
             {/* Live price + delta */}
             {livePrice !== null && (
@@ -197,7 +223,7 @@ export default function SymbolSearch() {
         )}
       </div>
 
-      {/* ── DROPDOWN: autocomplete results (overlays chart, never pushes grid) ── */}
+      {/* ── DROPDOWN ── */}
       {active && query.length > 0 && (
         <div
           className={[
@@ -208,24 +234,28 @@ export default function SymbolSearch() {
           ].join(" ")}
         >
           {filtered.length > 0 ? (
-            filtered.map((sym, i) => (
+            filtered.map((entry, i) => (
               <button
-                key={sym}
+                key={entry.symbol}
                 onMouseDown={(e) => {
-                  e.preventDefault(); // prevent input blur before selection fires
-                  selectSymbol(sym);
+                  e.preventDefault();
+                  selectSymbol(entry.symbol, entry.name);
                 }}
                 onMouseEnter={() => setHighlighted(i)}
                 className={[
-                  "flex items-center w-full px-3 font-mono text-left",
-                  // Touch rows on mobile, dense on desktop
+                  "flex items-center gap-2 w-full px-3 font-mono text-left",
                   "h-11 sm:h-9",
                   i === highlighted
                     ? "bg-[var(--color-hover)] text-[var(--color-text)]"
                     : "text-[var(--color-muted)]",
                 ].join(" ")}
               >
-                <HighlightedSymbol symbol={sym} query={query} />
+                <HighlightedSymbol symbol={entry.symbol} query={query} />
+                {entry.name && (
+                  <span className="truncate text-xs text-[var(--color-muted)]">
+                    — {entry.name}
+                  </span>
+                )}
               </button>
             ))
           ) : (
@@ -238,8 +268,6 @@ export default function SymbolSearch() {
     </div>
   );
 }
-
-// ── Magnifying glass icon (inline SVG, no deps) ──
 
 function SearchIcon() {
   return (
@@ -260,20 +288,24 @@ function SearchIcon() {
   );
 }
 
-// ── Highlight matched substring in neon green ──
-
-function HighlightedSymbol({ symbol, query }: { symbol: string; query: string }) {
-  const idx = symbol.toUpperCase().indexOf(query.toUpperCase());
-  if (idx === -1) return <span className="text-sm">{symbol}</span>;
+function HighlightedSymbol({
+  symbol,
+  query,
+}: {
+  symbol: string;
+  query: string;
+}) {
+  const idx = symbol.toLowerCase().indexOf(query.toLowerCase());
+  if (idx === -1) return <span className="text-sm font-bold">{symbol}</span>;
 
   const before = symbol.slice(0, idx);
   const match = symbol.slice(idx, idx + query.length);
   const after = symbol.slice(idx + query.length);
 
   return (
-    <span className="text-sm">
+    <span className="text-sm font-bold">
       {before}
-      <span className="text-[var(--color-neon)] font-bold">{match}</span>
+      <span className="text-[var(--color-neon)]">{match}</span>
       {after}
     </span>
   );

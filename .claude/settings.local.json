@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(done)",
+      "Bash(xargs cat:*)",
+      "Bash(wc -l /c/Users/leona/Desktop/financial-data-etl/ws_traces/WS_TRACE_2026-03-12_*.txt)",
+      "Bash(python -c \":*)",
+      "Bash(python -c \"import pandas as pd; import numpy as np; print\\(f''pandas={pd.__version__}, numpy={np.__version__}''\\)\")",
+      "Bash(python:*)",
+      "Bash(npx tsc:*)",
+      "Bash(node -e \"const lc = require\\(''''lightweight-charts''''\\); console.log\\(Object.keys\\(lc\\).filter\\(k => typeof lc[k] === ''''function''''\\).join\\('''', ''''\\)\\)\")",
+      "Bash(npx vite:*)"
+    ]
+  }
+}

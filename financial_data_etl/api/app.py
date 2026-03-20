@@ -121,10 +121,26 @@ def get_symbols():
 
     conn = get_connection()
     try:
-        rows = conn.execute(
+        # Get symbols
+        sym_rows = conn.execute(
             "SELECT DISTINCT symbol FROM tv_candles_raw ORDER BY symbol"
         ).fetchall()
-        _symbols_cache = [r[0] for r in rows]
+
+        # Get latest company names (simple, no complex joins)
+        name_rows = conn.execute(
+            """
+            SELECT symbol, company_name FROM fundamentals_snapshot
+            WHERE rowid IN (
+                SELECT MAX(rowid) FROM fundamentals_snapshot GROUP BY symbol
+            )
+            """
+        ).fetchall()
+        name_map = {r[0]: r[1] for r in name_rows}
+
+        _symbols_cache = [
+            {"symbol": r[0], "name": name_map.get(r[0])}
+            for r in sym_rows
+        ]
         _symbols_cache_ts = now
         return _symbols_cache
     finally:
@@ -498,19 +514,50 @@ async def ws_live(websocket: WebSocket, symbol: str):
             )
 
             switched = False
+            stream = session_manager.subscribe(
+                provider_symbol, "1d", n_initial=3
+            )
+            stream_iter = stream.__aiter__()
+
             try:
-                async for event_type, data in session_manager.subscribe(
-                    provider_symbol, "1d", n_initial=3
-                ):
+                while True:
+                    # ── RACE: next stream event vs switch_event ──
+                    next_task = asyncio.ensure_future(stream_iter.__anext__())
+                    switch_task = asyncio.ensure_future(switch_event.wait())
+
+                    done, pending = await asyncio.wait(
+                        {next_task, switch_task},
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+
+                    for p in pending:
+                        p.cancel()
+                        try:
+                            await p
+                        except (asyncio.CancelledError, StopAsyncIteration):
+                            pass
+
+                    # ── SWITCH WON: break immediately ──
+                    if switch_task in done:
+                        new_sym = switch_target[0]
+                        if new_sym:
+                            current_symbol = new_sym
+                            switched = True
+                        break
+
+                    # ── STREAM EVENT WON: extract and process ──
+                    try:
+                        event_type, data = next_task.result()
+                    except StopAsyncIteration:
+                        break
+
                     # ── ZOMBIE CHECKS ──
                     now = time.monotonic()
 
-                    # Hard TTL
                     if now - session_start > MAX_SESSION_DURATION:
                         await websocket.send_json({"type": "session_expired"})
                         break
 
-                    # Idle detection
                     idle_s = now - last_client_msg[0]
                     if idle_s > IDLE_DISCONNECT_TIMEOUT:
                         await websocket.send_json({"type": "idle_disconnect"})
@@ -518,14 +565,6 @@ async def ws_live(websocket: WebSocket, symbol: str):
                     if idle_s > IDLE_WARN_TIMEOUT and not idle_warned:
                         await websocket.send_json({"type": "idle_warning"})
                         idle_warned = True
-
-                    # Symbol switch requested?
-                    if switch_event.is_set():
-                        new_sym = switch_target[0]
-                        if new_sym:
-                            current_symbol = new_sym
-                            switched = True
-                        break
 
                     # ── ROUTE EVENTS ──
                     if event_type == "seed":
@@ -535,7 +574,6 @@ async def ws_live(websocket: WebSocket, symbol: str):
                         consecutive_heartbeats = 0
                         live_candle = state.update_tick(data)
 
-                        # Compute metrics in executor (thread-safe via df copy)
                         snapshot = state.get_df_snapshot()
                         metrics = await loop.run_in_executor(
                             None, compute_all_metrics_live, snapshot
@@ -559,8 +597,6 @@ async def ws_live(websocket: WebSocket, symbol: str):
                         })
 
                     elif event_type == "fundamentals":
-                        # TV sends raw keys (market_cap_basic, price_earnings_ttm, etc.)
-                        # Normalize to the frontend contract (market_cap, pe_ttm, etc.)
                         normalized = _normalize_fundamentals(data, current_symbol)
                         state.fundamentals = normalized
                         await websocket.send_json({
@@ -573,15 +609,15 @@ async def ws_live(websocket: WebSocket, symbol: str):
                         await websocket.send_json({"type": "heartbeat"})
 
                         if consecutive_heartbeats >= MAX_CONSECUTIVE_HEARTBEATS:
-                            # Too many heartbeats — TV may be dead or market closed
-                            # Don't disconnect, but log it
                             logger.warning(
                                 "ws_live %s: %d consecutive heartbeats",
                                 current_symbol, consecutive_heartbeats,
                             )
 
             finally:
-                # Cancel the listener task for this symbol's edge phase
+                # Close the stream generator (triggers TV session cleanup)
+                await stream.aclose()
+
                 if listener_task and not listener_task.done():
                     listener_task.cancel()
                     try:
@@ -590,10 +626,8 @@ async def ws_live(websocket: WebSocket, symbol: str):
                         pass
                     listener_task = None
 
-            # If we broke due to symbol switch, continue the while True loop
             if switched:
                 continue
-            # Otherwise (TTL, idle, error) — exit
             break
 
     except WebSocketDisconnect:

@@ -645,6 +645,8 @@ async def subscribe_ohlcv_stream(
                 except Exception:
                     pass
 
+            yielded = False
+
             for chunk in re.split(r"~m~\d+~m~", message)[1:]:
                 if not chunk.strip():
                     continue
@@ -658,9 +660,6 @@ async def subscribe_ohlcv_stream(
                 p = payload.get("p", [])
 
                 # ── SESSION GUARD: reject messages from stale/foreign sessions ──
-                # On a shared WS, old chart sessions may still push du/timescale
-                # messages after a symbol switch. p[0] is the chart or quote
-                # session ID. Only process messages addressed to OUR sessions.
                 if mtype in ("timescale_update", "du", "symbol_resolved"):
                     if not p or p[0] != chart_id:
                         if trace_file:
@@ -680,6 +679,7 @@ async def subscribe_ohlcv_stream(
                             f"TIMESCALE_UPDATE: {len(candles)} candles for {provider_symbol}\n\n"
                         )
                     yield ("seed", candles)
+                    yielded = True
 
                 # ── OHLCV: live bar tick (incremental update) ──
                 elif mtype == "du":
@@ -690,6 +690,7 @@ async def subscribe_ohlcv_stream(
                                 f"DU: {len(candles)} bar(s) updated for {provider_symbol}\n\n"
                             )
                         yield ("tick", candles)
+                        yielded = True
 
                 # ── Symbol metadata ──
                 elif mtype == "symbol_resolved":
@@ -702,6 +703,7 @@ async def subscribe_ohlcv_stream(
                             )
                             if name:
                                 yield ("company_name", name)
+                                yielded = True
 
                 # ── Fundamentals: accumulate qsd, yield on quote_completed ──
                 elif mtype == "qsd":
@@ -716,6 +718,13 @@ async def subscribe_ohlcv_stream(
                 elif mtype == "quote_completed":
                     if quote_snapshot:
                         yield ("fundamentals", dict(quote_snapshot))
+                        yielded = True
+
+            # ── GUARANTEE: if recv() returned but no data was yielded
+            # (ping-only message), yield heartbeat so the caller's
+            # async for body runs and can check switch_event. ──
+            if not yielded:
+                yield ("heartbeat", None)
 
     finally:
         # ── CLEANUP: delete chart + quote sessions on ANY exit ──

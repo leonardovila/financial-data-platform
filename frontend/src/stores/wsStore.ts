@@ -48,6 +48,7 @@ interface WsState {
   // Symbol
   currentSymbol: string;
   companyName: string | null;
+  pendingSymbolDisplay: string | null; // "AAPL — Apple Inc" shown during switch
 
   // Data
   seedData: SeedPayload | null;
@@ -62,7 +63,7 @@ interface WsState {
   // Actions
   connect: (symbol: string) => void;
   disconnect: () => void;
-  switchSymbol: (newSymbol: string) => void;
+  switchSymbol: (newSymbol: string, displayName?: string | null) => void;
 }
 
 // ── Module-level refs (outside Zustand for zero-cost access) ──
@@ -143,6 +144,7 @@ export const useWsStore = create<WsState>()((set, get) => {
           fundamentals: msg.fundamentals,
           metrics: msg.metrics,
           isMarketOpen: true,
+          pendingSymbolDisplay: null, // seed arrived, clear pending
         });
         break;
 
@@ -215,6 +217,7 @@ export const useWsStore = create<WsState>()((set, get) => {
     connectionError: null,
     currentSymbol: "",
     companyName: null,
+    pendingSymbolDisplay: null,
     seedData: null,
     latestTick: null,
     tickHistory: [],
@@ -302,19 +305,21 @@ export const useWsStore = create<WsState>()((set, get) => {
     },
 
     // ── switchSymbol ──
-    switchSymbol(newSymbol: string) {
+    switchSymbol(newSymbol: string, displayName?: string | null) {
       const ws = get().socket;
       const sym = newSymbol.toUpperCase();
 
       if (!ws || ws.readyState !== WebSocket.OPEN) {
-        // No active connection — do a fresh connect
         get().connect(sym);
         return;
       }
 
-      // Reset display state for the new symbol
+      // Build pending display: "AAPL — Apple Inc" or just "AAPL"
+      const pending = displayName ? `${sym} — ${displayName}` : sym;
+
       set({
         currentSymbol: sym,
+        pendingSymbolDisplay: pending,
         seedData: null,
         latestTick: null,
         tickHistory: [],
@@ -325,7 +330,6 @@ export const useWsStore = create<WsState>()((set, get) => {
         connectionError: null,
       });
 
-      // Send switch command over the existing socket
       ws.send(JSON.stringify({ action: "switch", symbol: sym }));
     },
   };

@@ -3,6 +3,7 @@ import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 
 export default defineConfig({
+  base: '/financial/', // <-- ESTO ES CRÍTICO
   plugins: [react(), tailwindcss()],
   server: {
     proxy: {

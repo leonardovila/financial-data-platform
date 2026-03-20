@@ -1,22 +1,23 @@
 """
-LiveSessionManager: singleton gatekeeper for the TradingView WebSocket (LIVE-04).
+LiveSessionManager: gatekeeper for TradingView WebSocket connections (LIVE-04).
 
-Manages exactly ONE persistent TradingView WebSocket connection. All live
-stream subscribers share this connection via unique chart/quote session IDs.
+Each subscribe() call opens its OWN dedicated TV WebSocket connection.
+This eliminates the concurrent recv() crash that occurs when a shared socket
+is read by two generators simultaneously (symbol switch, page reload).
+
+With MAX_CONNECTIONS=5, we have at most 5 TV connections — trivial load.
 
 Concurrency model:
-  - asyncio.Lock serializes subscribe() setup (session init + ID assignment)
-  - The stream itself runs OUTSIDE the lock (no blocking during recv)
-  - _active_streams counter tracks live generators for safe idle shutdown
-  - Idle watchdog closes the TV connection after IDLE_TIMEOUT_S of inactivity
-
-This module is the single point of contact with TradingView for the live API.
-The batch ETL uses its own separate connection pool (tv_websocket_scraper.py).
+  - Each subscriber is fully isolated: own socket, own recv loop, own cleanup
+  - _active_streams counter tracks live generators for stats/monitoring
+  - No asyncio.Lock needed — no shared mutable socket state
 """
 
 from __future__ import annotations
-from typing import Dict, Any, Optional, AsyncGenerator, Tuple
+from typing import Dict, Any, AsyncGenerator, Tuple
 import asyncio
+import random
+import string
 import time
 import logging
 
@@ -28,44 +29,24 @@ from financial_data_etl.scraping_pipeline.tv_websocket_connection.call_execution
 
 logger = logging.getLogger(__name__)
 
-IDLE_TIMEOUT_S = 600    # 10 minutes — close TV connection if no active streams
-IDLE_CHECK_INTERVAL = 60  # seconds between idle checks
-
 
 class LiveSessionManager:
     """
-    Singleton gatekeeper for a persistent TradingView WebSocket connection.
+    Gatekeeper for TradingView WebSocket connections.
 
     Usage (inside a FastAPI WebSocket handler):
 
-        stream = manager.subscribe("NASDAQ:AAPL", "1d", n_initial=3)
-        async for event_type, data in stream:
+        async for event_type, data in manager.subscribe("NASDAQ:AAPL", "1d"):
             ...
 
-    Lifecycle:
-        - Created at FastAPI startup (no connection opened yet — lazy init)
-        - First subscribe() opens the TV WS connection
-        - Subsequent subscribe() calls reuse the same WS with unique session IDs
-        - Idle watchdog closes the WS if no streams active for 10 minutes
-        - FastAPI shutdown calls manager.close()
+    Each subscribe() opens a dedicated TV connection and closes it on exit.
     """
 
     def __init__(self) -> None:
-        self._session: Optional[Dict[str, Any]] = None
-        self._base_chart_id: Optional[str] = None
-        self._counter: int = 0
-        self._lock: asyncio.Lock = asyncio.Lock()
         self._active_streams: int = 0
-        self._last_subscribe_ts: float = 0.0
-        self._watchdog_task: Optional[asyncio.Task] = None
-        self._closed: bool = False
         self._total_subscribes: int = 0
-        self._reconnect_count: int = 0
-        self._connected_since: Optional[float] = None
-
-    # ──────────────────────────────────────────────────────────────────────
-    # SUBSCRIBE: the public API — returns an async generator of events
-    # ──────────────────────────────────────────────────────────────────────
+        self._last_subscribe_ts: float = 0.0
+        self._closed: bool = False
 
     async def subscribe(
         self,
@@ -74,197 +55,60 @@ class LiveSessionManager:
         n_initial: int = 3,
     ) -> AsyncGenerator[Tuple[str, Any], None]:
         """
-        Subscribe to a symbol's live stream via the shared TV connection.
+        Subscribe to a symbol's live stream via a DEDICATED TV connection.
 
-        Yields the same events as subscribe_ohlcv_stream():
-            ('seed', candles), ('tick', candles), ('fundamentals', snapshot),
-            ('company_name', name), ('heartbeat', None)
-
-        The asyncio.Lock is held ONLY during session setup (~1ms if already
-        connected, ~500ms on first connect). The actual stream runs outside
-        the lock — recv() never blocks other coroutines from subscribing.
+        Opens its own WebSocket to TradingView on entry, closes it on exit.
+        No shared socket — no concurrent recv() conflicts.
         """
         if self._closed:
             raise RuntimeError("LiveSessionManager is closed")
 
-        # ── SETUP PHASE (under lock) ──
-        async with self._lock:
-            # Check if existing session is dead (TV closed gracefully or network drop)
-            if self._session is not None:
-                ws = self._session.get("ws")
-                # websockets: .open is False once close frame exchanged or connection lost
-                if ws is None or (hasattr(ws, "open") and not ws.open):
-                    logger.warning("TV session is dead (ws.open=False), resetting for reconnect")
-                    try:
-                        await close_session(self._session)
-                    except Exception:
-                        pass
-                    self._session = None
-                    self._base_chart_id = None
-                    self._connected_since = None
-                    self._reconnect_count += 1
-
-            # Lazy init: open TV connection on first subscribe (or after reconnect)
-            if self._session is None:
-                logger.info("Opening TradingView WebSocket connection (lazy init)")
-                self._session = await open_session(trace=False)
-                self._base_chart_id = self._session["chart_id"]
-                self._connected_since = time.monotonic()
-                logger.info(
-                    "TV connection established: base_chart_id=%s", self._base_chart_id
-                )
-
-                # Start idle watchdog if not running
-                if self._watchdog_task is None or self._watchdog_task.done():
-                    self._watchdog_task = asyncio.create_task(self._idle_watchdog())
-
-            # Assign unique session IDs for this subscription
-            import random
-            import string
-            self._counter += 1
-            rand_str = ''.join(random.choices(string.ascii_lowercase + string.digits, k=12))
-            stream_session = {
-                "ws": self._session["ws"],
-                "trace_file": self._session.get("trace_file"),
-                "chart_id": f"cs_{rand_str}",
-                "quote_id": f"qs_{rand_str}",
-            }
-            self._last_subscribe_ts = time.monotonic()
-            self._total_subscribes += 1
-
-        # ── STREAM PHASE (outside lock) ──
+        # ── OPEN DEDICATED SESSION ──
+        session = await open_session(trace=False)
+        rand_id = "".join(random.choices(string.ascii_lowercase + string.digits, k=12))
+        stream_session = {
+            "ws": session["ws"],
+            "trace_file": session.get("trace_file"),
+            "chart_id": f"cs_{rand_id}",
+            "quote_id": f"qs_{rand_id}",
+        }
+        self._last_subscribe_ts = time.monotonic()
+        self._total_subscribes += 1
         self._active_streams += 1
+
+        logger.info(
+            "TV subscribe: %s (stream_id=%s, active=%d)",
+            provider_symbol, rand_id, self._active_streams,
+        )
+
+        # ── STREAM PHASE ──
         try:
             async for event in subscribe_ohlcv_stream(
                 stream_session, provider_symbol, timeframe, n_initial
             ):
                 yield event
         finally:
+            # ── CLEANUP: close THIS session (generator exit, break, error) ──
             self._active_streams -= 1
-
-    # ──────────────────────────────────────────────────────────────────────
-    # RECONNECT: reset the dead session, next subscribe() reopens
-    # ──────────────────────────────────────────────────────────────────────
-
-    async def reconnect(self) -> None:
-        """
-        Close the dead TV session and reset state.
-
-        Called by the WS handler when subscribe_ohlcv_stream raises
-        ConnectionClosed. The next subscribe() call will trigger a
-        fresh open_session().
-        """
-        async with self._lock:
-            if self._session is not None:
-                logger.warning("Reconnecting: closing dead TV session")
-                try:
-                    await close_session(self._session)
-                except Exception:
-                    pass
-                self._session = None
-                self._base_chart_id = None
-                self._connected_since = None
-                self._reconnect_count += 1
-
-    # ──────────────────────────────────────────────────────────────────────
-    # CLOSE: clean shutdown (FastAPI shutdown hook)
-    # ──────────────────────────────────────────────────────────────────────
+            try:
+                await close_session(session)
+            except Exception:
+                pass
+            logger.info(
+                "TV unsubscribe: %s (stream_id=%s, active=%d)",
+                provider_symbol, rand_id, self._active_streams,
+            )
 
     async def close(self) -> None:
-        """
-        Cleanly shut down: cancel watchdog, close TV connection.
-        Called from FastAPI's shutdown event.
-        """
+        """Clean shutdown (FastAPI shutdown hook). Marks manager as closed."""
         self._closed = True
-
-        # Cancel the idle watchdog
-        if self._watchdog_task and not self._watchdog_task.done():
-            self._watchdog_task.cancel()
-            try:
-                await self._watchdog_task
-            except asyncio.CancelledError:
-                pass
-            self._watchdog_task = None
-
-        # Close the TV session
-        async with self._lock:
-            if self._session is not None:
-                logger.info("Shutting down: closing TV session")
-                try:
-                    await close_session(self._session)
-                except Exception:
-                    pass
-                self._session = None
-                self._base_chart_id = None
-                self._connected_since = None
-
-    # ──────────────────────────────────────────────────────────────────────
-    # IDLE WATCHDOG: background task that closes idle connections
-    # ──────────────────────────────────────────────────────────────────────
-
-    async def _idle_watchdog(self) -> None:
-        """
-        Background task: checks every 60s if the TV connection has been
-        idle (no active streams, no recent subscribes) for IDLE_TIMEOUT_S.
-        If so, closes the connection to prevent zombie TV sessions overnight.
-        """
-        try:
-            while True:
-                await asyncio.sleep(IDLE_CHECK_INTERVAL)
-
-                # Quick pre-check without lock (safe: single-threaded asyncio)
-                if (
-                    self._session is not None
-                    and self._active_streams == 0
-                    and time.monotonic() - self._last_subscribe_ts > IDLE_TIMEOUT_S
-                ):
-                    # Double-check under lock to prevent race with subscribe()
-                    async with self._lock:
-                        if (
-                            self._session is not None
-                            and self._active_streams == 0
-                            and time.monotonic() - self._last_subscribe_ts > IDLE_TIMEOUT_S
-                        ):
-                            logger.info(
-                                "Idle watchdog: no streams for %ds — closing TV connection",
-                                IDLE_TIMEOUT_S,
-                            )
-                            try:
-                                await close_session(self._session)
-                            except Exception:
-                                pass
-                            self._session = None
-                            self._base_chart_id = None
-                            self._connected_since = None
-
-        except asyncio.CancelledError:
-            # Normal shutdown path — close() cancelled us
-            pass
-
-    # ──────────────────────────────────────────────────────────────────────
-    # OBSERVABILITY
-    # ──────────────────────────────────────────────────────────────────────
+        logger.info("LiveSessionManager closed (active_streams=%d)", self._active_streams)
 
     def stats(self) -> Dict[str, Any]:
         """Return current state for /ws/stats monitoring endpoint."""
         return {
-            "alive": self._session is not None,
             "active_streams": self._active_streams,
             "total_subscribes": self._total_subscribes,
-            "reconnect_count": self._reconnect_count,
-            "counter": self._counter,
             "last_subscribe_ts": self._last_subscribe_ts,
-            "connected_since": self._connected_since,
-            "idle_timeout_s": IDLE_TIMEOUT_S,
             "closed": self._closed,
         }
-
-    @property
-    def is_connected(self) -> bool:
-        """True if a TV WebSocket connection is currently open."""
-        return self._session is not None
-
-    @property
-    def active_streams(self) -> int:
-        """Number of currently active subscribe() generators."""
-        return self._active_streams
