@@ -230,20 +230,23 @@
     "id": "FRONT-008",
     "component": "src/components/SymbolSearch.tsx",
     "difficulty": "MEDIUM",
-    "description": "The symbol search/switch component. A command-palette style input (Ctrl+K or tap) that fetches available symbols from GET /symbols, provides autocomplete, and triggers wsStore.switchSymbol() on selection.",
+    "description": "Persistent, always-visible search bar permanently embedded in the header row. Zero hidden state, zero Ctrl+K friction. A recruiter scanning the page for 3 seconds must immediately see: active symbol, company name, live price, AND an obvious text input to switch symbols. The input IS the header — it is both the identity display and the navigation tool in one unified component.",
     "architecture_proposal": {
-      "trigger": "A compact header showing current symbol + company name. Clicking it or pressing Ctrl+K opens the search overlay.",
-      "symbol_fetching": "On mount: fetch GET /symbols from the REST API. Cache in a local ref. The list is static (changes only after batch ETL runs).",
-      "autocomplete": "Simple substring filter on the symbol list. No fuzzy matching needed — symbols are short uppercase strings. Show max 10 results.",
-      "selection": "On Enter or tap: call wsStore.switchSymbol(selectedSymbol). Close the overlay. The Zustand store sends {action:'switch', symbol} over the existing WS.",
-      "styling": "Full-screen semi-transparent overlay (#0a0a0a/80). Centered input with neon green border on focus. Results list: monospace, dense rows, highlight on hover/active."
+      "design_philosophy": "The search is NOT a modal. It is not hidden behind a click. It is a persistent inline input that lives in the header row at all times. When idle, it displays the current symbol in bold + company name + live price. When the user clicks/taps ANYWHERE on the bar, it transforms into a live search input with an autocomplete dropdown beneath it. This is the Bloomberg/Refinitiv pattern — the top bar IS the search.",
+      "layout": {
+        "idle_state": "A full-width bar (grid area: 'header'). Left: symbol in bold mono (e.g., 'BTC'). Center: company name in muted text. Right: live close price (from latestTick, colored green/red). A subtle magnifying glass icon on the far left signals searchability. The entire bar is one large click/tap target.",
+        "active_state": "On focus: the symbol/company/price fade out, replaced by a text <input> with autofocus. Placeholder: 'Search symbol...' in muted text. The input takes the SAME physical space as the idle state — no layout shift. A dropdown of up to 8 filtered results appears BELOW the header (position:absolute, z-50), overlaying the chart. Each result row shows: symbol (bold) + name (if available from the catalog). Arrow keys navigate, Enter selects, Escape/blur cancels.",
+        "transition": "Idle → Active: 100ms opacity crossfade (not a jarring show/hide). Active → Idle: instant on selection (new symbol loads), 150ms fade on blur/escape."
+      },
+      "symbol_fetching": "On mount: fetch GET /symbols from the REST API. Cache in a useRef. The list is static (changes only after batch ETL runs). If the fetch fails, the search still works — the user can type a symbol and hit Enter to attempt a switch.",
+      "autocomplete": "Substring filter on the cached symbol list. Case-insensitive. Show max 8 results. Highlight the matched substring in neon green within each result row. If 0 results: show 'No match' in muted text (never an empty dropdown).",
+      "selection": "On Enter or tap on a result: call wsStore.switchSymbol(selectedSymbol). Blur the input. The idle state returns showing the new symbol. The Zustand store sends {action:'switch', symbol} over the WS."
     },
     "responsive_strategy": {
-      "approach": "Full-screen takeover on mobile. The search is THE primary navigation — it must feel like a native app search.",
-      "desktop": "Centered modal (max-w-md, 448px). Input at top, results list below. Keyboard navigation (arrow keys + Enter). Escape to close.",
-      "mobile": "Full-screen overlay (position:fixed inset-0). Input pinned to top with auto-focus (opens the keyboard immediately). Results list fills remaining height with scroll. Each result row is h-12 (48px) for fat-finger-proof tap targets. On selection, the overlay dismisses and the keyboard closes via input.blur().",
-      "trigger_adaptation": "Desktop: Ctrl+K shortcut shown as a hint badge next to the symbol. Mobile: no shortcut hint (no keyboard). Instead, the entire symbol header area is a large tap target (h-12, full-width) with a subtle search icon (magnifying glass) to signal interactivity.",
-      "keyboard_handling": "On mobile, the virtual keyboard pushes the viewport. Use visualViewport API or position the input at the top (not centered) so results remain visible above the keyboard. The overlay uses flex-col: input (flex-none) at top, results (flex-1 overflow-y-auto) below."
+      "approach": "The bar is always visible on every viewport. On mobile it is taller (h-12, 48px) for touch. On desktop it is compact (h-10, 40px).",
+      "desktop": "Full-width header bar. Idle: symbol (left) + company (center) + price (right). Active: full-width input with dropdown. Dropdown max-w matches the header width. Arrow key navigation supported.",
+      "mobile": "Full-width header bar, h-12. Idle: symbol (left, text-lg bold) + price (right). Company name hidden (insufficient width). Active: full-width input, font-size 16px (prevents iOS zoom on focus). Dropdown results use h-11 (44px) rows for tap targets. Dropdown overlays the chart (z-50). On selection: input.blur() closes the virtual keyboard.",
+      "no_layout_shift": "The header bar has a FIXED height on each breakpoint (h-12 mobile, h-10 desktop). It never changes height between idle and active states. The dropdown is position:absolute and does not push content down."
     },
     "status": "PENDING"
   },
@@ -287,7 +290,8 @@
         "areas": "'header' 'chart' 'metrics' 'status'",
         "ascii": [
           "┌──────────────────────────┐",
-          "│ SymbolSearch (h-12)      │ ← tap to search",
+          "│ [🔍 BTC    $67,432.10]  │ ← persistent search bar (h-12)",
+          "│                          │   tap anywhere → inline input + dropdown",
           "├──────────────────────────┤",
           "│                          │",
           "│   Chart (55vh)           │ ← full width, touch zoom/pan",
@@ -303,15 +307,17 @@
           "│ StatusBar (h-7)         │ ← safe-area-inset-bottom",
           "└──────────────────────────┘",
           "",
-          "TickStack: floating bottom-sheet (hidden by default, toggle via pill button)"
+          "TickStack: floating bottom-sheet (hidden by default, toggle via pill button)",
+          "Search dropdown: position:absolute z-50, overlays chart when active"
         ],
-        "scroll": "The entire area below the header scrolls vertically (chart + fundamentals + metrics). The chart has a fixed height (55vh) so it never collapses to nothing. overflow-y-auto on the main container."
+        "scroll": "The entire area below the header scrolls vertically (chart + fundamentals + metrics). The chart has a fixed height (55vh) so it never collapses to nothing. overflow-y-auto on the main container.",
+        "header_behavior": "The search header is always visible at the top (not scrollable). It is a persistent identity bar: idle shows symbol + price, tap transforms to search input. The dropdown appears below the header overlaying the chart, not pushing it down."
       },
       "mobile_landscape_layout": {
         "breakpoint": "< 640px AND orientation: landscape",
         "grid": "grid-template-rows: auto 1fr auto; grid-template-cols: 1fr;",
         "areas": "'header' 'chart' 'status'",
-        "behavior": "Full immersive chart mode. MetricsGrid and FundamentalsBar hide. Only the chart fills the screen. A floating toggle button (bottom-right, 40x40) opens MetricsGrid as an overlay."
+        "behavior": "Full immersive chart mode. MetricsGrid and FundamentalsBar hide. Only the chart fills the screen. The search header remains pinned at the top (shrinks to h-8, compact mode: symbol + price only). A floating toggle button (bottom-right, 40x40) opens MetricsGrid as an overlay."
       },
       "tablet_layout": {
         "breakpoint": "≥ 640px AND < 1280px",
@@ -319,7 +325,7 @@
         "areas": "'header header' 'fund fund' 'chart ticks' 'metrics metrics' 'status status'",
         "ascii": [
           "┌────────────────────┬─────────────┐",
-          "│ SymbolSearch       │             │",
+          "│ [🔍 BTC  Bitcoin  $67,432.10]    │ ← persistent search (h-10)",
           "├────────────────────┴─────────────┤",
           "│ FundamentalsBar                  │",
           "├────────────────────┬─────────────┤",
@@ -338,23 +344,24 @@
         "grid": "grid-template-rows: auto auto 1fr auto auto; grid-template-cols: 70fr 30fr;",
         "areas": "'header header' 'fund fund' 'chart ticks' 'metrics metrics' 'status status'",
         "ascii": [
-          "┌──────────────────────────────┬──────────────┐",
-          "│ SymbolSearch (Ctrl+K)        │              │",
-          "├──────────────────────────────┴──────────────┤",
-          "│ FundamentalsBar (full row)                   │",
-          "├──────────────────────────────┬──────────────┤",
-          "│                              │              │",
-          "│    Chart (70%)               │  TickStack   │",
-          "│    4K crisp, HiDPI aware     │  (30%)       │",
-          "│                              │  50 rows     │",
-          "│                              │  dense h-7   │",
-          "├──────────────────────────────┴──────────────┤",
-          "│ MetricsGrid (3 equal cols)                   │",
-          "├─────────────────────────────────────────────┤",
-          "│ StatusBar (h-6)                              │",
-          "└─────────────────────────────────────────────┘"
+          "┌──────────────────────────────────────────────────┐",
+          "│ [🔍 BTC   Bitcoin   $67,432.10 ▲+1.23%]        │ ← persistent search (h-10)",
+          "│   click → inline input + dropdown overlay        │",
+          "├──────────────────────────────────────────────────┤",
+          "│ Mkt Cap $1.3T │ P/E — │ EPS — │ Sector Crypto  │ ← FundamentalsBar",
+          "├──────────────────────────────┬───────────────────┤",
+          "│                              │                   │",
+          "│    Chart (70%)               │  TickStack (30%)  │",
+          "│    4K crisp, HiDPI aware     │  50 rows, h-7    │",
+          "│                              │  dense feed       │",
+          "├──────────────────────────────┴───────────────────┤",
+          "│ MetricsGrid (3 equal cols)                       │",
+          "├──────────────────────────────────────────────────┤",
+          "│ StatusBar (h-6)                                  │",
+          "└──────────────────────────────────────────────────┘"
         ],
-        "4k_note": "At ≥2560px, consider increasing TickStack to 40% width and showing expanded metric labels. But V1 ships with the 70/30 split for all desktop sizes."
+        "4k_note": "At ≥2560px, consider increasing TickStack to 40% width. V1 ships with 70/30.",
+        "search_dropdown": "When the search input is active, the autocomplete dropdown appears as position:absolute z-50 below the header, max-h-[320px], overlaying the chart/fundamentals. It does NOT push the grid down. Click outside or Escape dismisses."
       },
       "implementation": "Use Tailwind v4 responsive prefixes: default (mobile) → sm: (≥640px tablet) → lg: (≥1024px) → xl: (≥1280px desktop). The grid is defined in Dashboard.tsx with className='grid grid-rows-[auto_55vh_auto_auto] grid-cols-1 sm:grid-rows-[auto_auto_1fr_auto_auto] sm:grid-cols-[65fr_35fr] xl:grid-cols-[70fr_30fr]'. Named grid-area classes on each child.",
       "viewport_height": "Use h-dvh (dynamic viewport height) on the root container, NOT h-screen. dvh accounts for mobile browser chrome (Safari's address bar, bottom toolbar) that steals 80-100px from 100vh. This prevents the StatusBar from being hidden behind the iOS bottom bar.",
