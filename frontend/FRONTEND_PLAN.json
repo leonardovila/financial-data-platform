@@ -136,7 +136,7 @@
       "resize_observer": "A single ResizeObserver on the chart container div calls chart.resize(entry.contentRect.width, entry.contentRect.height). This handles orientation changes, split-view on iPad, and browser resize seamlessly — zero manual breakpoint logic in the chart itself.",
       "touch_interactions": "Lightweight Charts has built-in touch support (pinch-to-zoom, pan). No extra work. Disable the crosshair tooltip on mobile (it covers the candles) — show price in the SymbolSearch header instead."
     },
-    "status": "PENDING"
+    "status": "CLOSED"
   },
   {
     "id": "FRONT-005",
@@ -168,7 +168,7 @@
       "row_density": "On mobile, rows grow to h-9 (36px) to meet 44px touch target guidelines. On desktop, rows stay h-7 (28px) for maximum information density.",
       "no_horizontal_scroll": "Tick row layout uses flex with truncation (text-ellipsis) on the price column. The 3-column mobile layout is: time (flex-none w-16) | price (flex-1 min-w-0) | delta (flex-none w-16). Zero overflow."
     },
-    "status": "PENDING"
+    "status": "CLOSED"
   },
   {
     "id": "FRONT-006",
