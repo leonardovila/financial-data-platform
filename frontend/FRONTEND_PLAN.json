@@ -95,7 +95,7 @@
       "visibility_api": "Listen to document.visibilityState. When the tab/app goes to background (user switches apps on iPhone), PAUSE reconnection attempts to save battery and mobile data. Resume only when visible again.",
       "reduced_tick_history": "On mobile (detected via navigator.maxTouchPoints > 0 or matchMedia), reduce tickHistory cap from 50 to 20 entries. Less RAM, fewer DOM nodes in the TickStack."
     },
-    "status": "PENDING"
+    "status": "CLOSED"
   },
   {
     "id": "FRONT-004",
