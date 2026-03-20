@@ -655,6 +655,22 @@ async def subscribe_ohlcv_stream(
                     continue
 
                 mtype = payload.get("m")
+                p = payload.get("p", [])
+
+                # ── SESSION GUARD: reject messages from stale/foreign sessions ──
+                # On a shared WS, old chart sessions may still push du/timescale
+                # messages after a symbol switch. p[0] is the chart or quote
+                # session ID. Only process messages addressed to OUR sessions.
+                if mtype in ("timescale_update", "du", "symbol_resolved"):
+                    if not p or p[0] != chart_id:
+                        if trace_file:
+                            trace_file.write(
+                                f"IGNORED {mtype}: session {p[0] if p else '?'} != {chart_id}\n\n"
+                            )
+                        continue
+                elif mtype in ("qsd", "quote_completed"):
+                    if not p or p[0] != quote_id:
+                        continue
 
                 # ── OHLCV: initial seed (full candle set) ──
                 if mtype == "timescale_update":
@@ -666,7 +682,6 @@ async def subscribe_ohlcv_stream(
                     yield ("seed", candles)
 
                 # ── OHLCV: live bar tick (incremental update) ──
-                # 'du' has identical p[1].sds_1.s structure → parse_ohlcv works
                 elif mtype == "du":
                     candles = parse_ohlcv(payload)
                     if candles:
@@ -678,7 +693,6 @@ async def subscribe_ohlcv_stream(
 
                 # ── Symbol metadata ──
                 elif mtype == "symbol_resolved":
-                    p = payload.get("p")
                     if isinstance(p, list) and len(p) >= 3:
                         meta = p[2]
                         if isinstance(meta, dict):

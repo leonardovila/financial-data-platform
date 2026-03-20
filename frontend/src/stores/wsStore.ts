@@ -147,6 +147,11 @@ export const useWsStore = create<WsState>()((set, get) => {
         break;
 
       case "tick": {
+        // ── TRANSITION LOCK: drop rogue ticks until fresh seed arrives ──
+        // switchSymbol() sets seedData=null. Any tick arriving before the
+        // new seed is a stale message from the old symbol's chart session.
+        if (!get().seedData) return;
+
         const prev = get().tickHistory;
         const history = [msg, ...prev].slice(0, TICK_HISTORY_CAP);
         set({
