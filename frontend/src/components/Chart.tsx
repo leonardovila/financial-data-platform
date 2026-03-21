@@ -83,11 +83,9 @@ export default function Chart() {
 
     const chart = createChart(el, {
       ...chartOptions,
-      width: el.clientWidth,
-      height: el.clientHeight,
+      autoSize: true, // LWC handles ResizeObserver internally — no manual width/height
       crosshair: {
         ...chartOptions.crosshair,
-        // Disable crosshair tooltip on mobile — it covers the candles
         ...(IS_TOUCH ? { horzLine: { ...chartOptions.crosshair?.horzLine, labelVisible: false } } : {}),
       },
     });
@@ -99,7 +97,6 @@ export default function Chart() {
       priceFormat: { type: "volume" },
     });
 
-    // Volume overlay: scale to bottom 15% of chart
     chart.priceScale("volume").applyOptions({
       scaleMargins: { top: 0.85, bottom: 0 },
     });
@@ -108,19 +105,7 @@ export default function Chart() {
     candleSeriesRef.current = candleSeries;
     volumeSeriesRef.current = volumeSeries;
 
-    // ── ResizeObserver: handles all viewport changes ──
-    const ro = new ResizeObserver((entries) => {
-      for (const entry of entries) {
-        const { width, height } = entry.contentRect;
-        if (width > 0 && height > 0) {
-          chart.resize(width, height);
-        }
-      }
-    });
-    ro.observe(el);
-
     return () => {
-      ro.disconnect();
       chart.remove();
       chartRef.current = null;
       candleSeriesRef.current = null;
@@ -167,8 +152,7 @@ export default function Chart() {
   return (
     <div
       ref={containerRef}
-      className="w-full h-full min-h-0"
-      style={{ contain: "strict" }}
+      className="w-full h-full min-h-[200px]"
     />
   );
 }
