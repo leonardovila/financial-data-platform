@@ -30,7 +30,7 @@ import websockets
 
 # ----------- CONFIG -----------
 WS_POOL_SIZE: int = int(os.environ.get("WS_POOL_SIZE", "20"))
-SYMBOLS_PER_BATCH: int = int(os.environ.get("SYMBOLS_PER_BATCH", "50"))
+SYMBOLS_PER_BATCH: int = int(os.environ.get("SYMBOLS_PER_BATCH", "1"))
 PROVIDER = "tradingview"
 MAX_BATCH_RETRIES = 3  # max reconnections per worker before giving up on requeuing
 # -------------------------------------------
