@@ -1,12 +1,11 @@
 // ──────────────────────────────────────────────────────────────────────────────
 // FRONT-010: Dashboard — the single source of spatial truth
 //
-// CSS Grid with responsive breakpoints. ONE grid, four layouts:
-//   Mobile portrait (<640px):  1-col, chart 55vh, metrics tabbed, ticks=sheet
-//   Tablet (640-1279px):       2-col 65/35, ticks sidebar, metrics 3-col
-//   Desktop (≥1280px):         2-col 70/30, full density
+// Mobile (<640px):    single column, fixed slots, NO scroll, NO flex
+//   header(48px) + chart(1fr) + metrics(auto) + status(28px) = 100dvh
 //
-// h-dvh root (not h-screen) — respects Safari's dynamic toolbar.
+// Tablet (≥640px):    2-col 65/35 grid
+// Desktop (≥1280px):  2-col 70/30 grid
 // ──────────────────────────────────────────────────────────────────────────────
 
 import { useEffect } from "react";
@@ -26,7 +25,6 @@ export default function Dashboard() {
   const disconnect = useWsStore((s) => s.disconnect);
   const seedData = useWsStore((s) => s.seedData);
 
-  // ── Connect on mount, disconnect on unmount ──
   useEffect(() => {
     connect(DEFAULT_SYMBOL);
     return () => disconnect();
@@ -35,37 +33,34 @@ export default function Dashboard() {
   return (
     <div
       className={[
-        // Root: fill dynamic viewport height
         "h-dvh w-full overflow-hidden bg-[var(--color-bg)]",
 
-        // ── MOBILE (<640px): single column ──
-        "grid",
-        "grid-cols-1",
-        "grid-rows-[auto_1fr_auto_auto_auto]",
-        // areas: header / chart / fund / metrics / status
-        // (fund + metrics scroll within the content area below chart)
+        // ── ALL viewports: grid ──
+        "grid grid-cols-1",
 
-        // ── TABLET (≥640px): 2-col 65/35 ──
+        // ── MOBILE: header(48px) chart(1fr) metrics(auto) status(28px) ──
+        "grid-rows-[48px_1fr_auto_28px]",
+
+        // ── TABLET (≥640px): add fund row + ticks column ──
         "sm:grid-cols-[65fr_35fr]",
         "sm:grid-rows-[auto_auto_1fr_auto_auto]",
 
-        // ── DESKTOP (≥1280px): 2-col 70/30 ──
+        // ── DESKTOP (≥1280px): wider chart ──
         "xl:grid-cols-[70fr_30fr]",
       ].join(" ")}
     >
-      {/* ── ROW 1: Search header (spans full width) ── */}
-      <div className="col-span-1 sm:col-span-2">
+      {/* ── ROW 1: Header ── */}
+      <div className="sm:col-span-2 min-w-0">
         <SymbolSearch />
       </div>
 
-      {/* ── ROW 2: FundamentalsBar (spans full width, hidden on mobile portrait when no seed) ── */}
-      <div className="col-span-1 sm:col-span-2">
+      {/* ── ROW 2 (tablet+): FundamentalsBar — hidden on mobile ── */}
+      <div className="hidden sm:block sm:col-span-2">
         <FundamentalsBar />
       </div>
 
-      {/* ── ROW 3: Chart (left) + TickStack sidebar (right, sm+ only) ── */}
+      {/* ── ROW 2 mobile / ROW 3 tablet+: Chart ── */}
       <div className="min-h-0 min-w-0 relative">
-        {/* Loading state: pulsing dot */}
         {!seedData && (
           <div className="absolute inset-0 flex items-center justify-center z-10">
             <div className="w-3 h-3 rounded-full bg-[var(--color-neon)] pulse" />
@@ -74,22 +69,25 @@ export default function Dashboard() {
         <Chart />
       </div>
 
-      {/* TickStack sidebar — visible on sm+, hidden on mobile */}
+      {/* ── TickStack sidebar (tablet+ only) ── */}
       <div className="hidden sm:block min-h-0 min-w-0">
         <TickStackSidebar />
       </div>
 
-      {/* ── ROW 4: MetricsGrid (spans full width) ── */}
-      <div className="col-span-1 sm:col-span-2 overflow-y-auto">
+      {/* ── ROW 3 mobile / ROW 4 tablet+: MetricsGrid ── */}
+      <div className="sm:col-span-2 min-w-0 overflow-hidden">
         <MetricsGrid />
       </div>
 
-      {/* ── ROW 5: StatusBar (spans full width) ── */}
-      <div className="col-span-1 sm:col-span-2">
+      {/* ── ROW 4 mobile / ROW 5 tablet+: StatusBar ── */}
+      <div
+        className="sm:col-span-2"
+        style={{ paddingBottom: "env(safe-area-inset-bottom)" }}
+      >
         <StatusBar />
       </div>
 
-      {/* ── Mobile-only: TickStack bottom sheet + floating pill ── */}
+      {/* ── Mobile bottom sheet (fixed, outside grid flow) ── */}
       <TickStackMobile />
     </div>
   );

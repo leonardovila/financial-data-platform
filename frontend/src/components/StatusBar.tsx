@@ -48,11 +48,10 @@ export default function StatusBar() {
     <div
       className={[
         "flex items-center justify-between px-3 font-mono",
-        "h-7 sm:h-6 text-[10px]",
+        "h-full text-[10px]",
         "bg-[var(--color-bg)] border-t border-[var(--color-border)]",
         "text-[var(--color-muted)]",
       ].join(" ")}
-      style={{ paddingBottom: "env(safe-area-inset-bottom)" }}
     >
       {/* Left: status dot + label */}
       <div className="flex items-center gap-1.5 shrink-0">

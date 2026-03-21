@@ -107,12 +107,12 @@ export default function MetricsGrid() {
       <div
         ref={scrollRef}
         className={[
-          // Mobile: scroll-snap
-          "flex overflow-x-auto snap-x snap-mandatory",
-          "-webkit-overflow-scrolling-touch",
+          // Mobile: scroll-snap, constrain width to viewport
+          "flex overflow-x-auto snap-x snap-mandatory w-full",
           // Desktop: grid
           "sm:grid sm:grid-cols-3 sm:overflow-visible",
         ].join(" ")}
+        style={{ WebkitOverflowScrolling: "touch" }}
       >
         <MetricCard title="Performance" rows={perfRows} />
         <MetricCard title="Volatility" rows={volRows} />

@@ -134,7 +134,12 @@ export default function Chart() {
         candleSeriesRef.current.setData(clean.map(seedToCandle));
         volumeSeriesRef.current.setData(clean.map(seedToVolume));
 
-        chartRef.current?.timeScale().fitContent();
+        // Reset BOTH axes to fit the new symbol's data range
+        chartRef.current?.timeScale().fitContent();              // horizontal
+        chartRef.current?.priceScale("right").applyOptions({});  // force Y-axis recalc
+        chartRef.current?.priceScale("volume").applyOptions({    // force volume recalc
+          scaleMargins: { top: 0.85, bottom: 0 },
+        });
       }
 
       // 2. Handle Transient Tick (cuando llega un nuevo precio en vivo)
