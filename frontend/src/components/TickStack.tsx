@@ -131,18 +131,19 @@ export function TickStackMobile() {
 
   return (
     <>
-      {/* Floating pill toggle — anchored bottom-right, above StatusBar */}
+      {/* Feed pill — pinned inside Nginx navbar, top-right on mobile */}
       <button
         onClick={() => setOpen((v) => !v)}
         className={[
-          "fixed right-3 bottom-12 z-50 sm:hidden",
-          "flex items-center gap-1.5 px-3 py-1.5",
-          "text-[10px] uppercase tracking-widest font-mono",
+          "fixed top-[7px] right-3 sm:hidden",
+          "flex items-center gap-1.5 px-2.5 py-1",
+          "text-[10px] uppercase tracking-widest font-mono rounded",
           "border transition-colors duration-150",
           open
             ? "bg-[var(--color-neon)] text-[var(--color-bg)] border-[var(--color-neon)]"
             : "bg-[var(--color-panel)] text-[var(--color-muted)] border-[var(--color-border)]",
         ].join(" ")}
+        style={{ zIndex: 100000 }}
         aria-label={open ? "Close live feed" : "Open live feed"}
       >
         <span

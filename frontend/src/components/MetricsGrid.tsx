@@ -11,7 +11,7 @@ import { useWsStore } from "../stores/wsStore";
 import MetricCard from "./MetricCard";
 import { formatPercent, formatLargeNumber } from "../lib/formatters";
 
-const TABS = ["PERF", "VOL", "RISK"] as const;
+const TABS = ["PERF", "VOLATILITY", "VOLUME"] as const;
 
 export default function MetricsGrid() {
   const metrics = useWsStore((s) => s.metrics);

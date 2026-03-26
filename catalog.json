@@ -1,4 +1,52 @@
 {
+  "SPX": {
+    "provider_symbol": {
+      "tradingview": "TVC:SPX"
+    },
+    "ticker": "SPX"
+  },
+  "LOWN": {
+    "provider_symbol": {
+      "tradingview": "INDEX:LOWN"
+    },
+    "ticker": "LOWN"
+  },
+  "DECL": {
+    "provider_symbol": {
+      "tradingview": "USI:DECL"
+    },
+    "ticker": "DECL"
+  },
+  "ADVN": {
+    "provider_symbol": {
+      "tradingview": "INDEX:ADVN"
+    },
+    "ticker": "ADVN"
+  },
+  "DVOL": {
+    "provider_symbol": {
+      "tradingview": "USI:DVOL"
+    },
+    "ticker": "DVOL"
+  },
+  "UVOL": {
+    "provider_symbol": {
+      "tradingview": "USI:UVOL"
+    },
+    "ticker": "UVOL"
+  },
+  "HIGHN": {
+    "provider_symbol": {
+      "tradingview": "INDEX:HIGN"
+    },
+    "ticker": "HIGHN"
+  },
+  "ADD": {
+    "provider_symbol": {
+      "tradingview": "USI:ADD"
+    },
+    "ticker": "ADD"
+  },
   "BTC": {
     "provider_symbol": {
       "tradingview": "BINANCE:BTCUSDT"

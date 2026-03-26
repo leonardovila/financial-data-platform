@@ -9,7 +9,9 @@
       "Bash(python:*)",
       "Bash(npx tsc:*)",
       "Bash(node -e \"const lc = require\\(''''lightweight-charts''''\\); console.log\\(Object.keys\\(lc\\).filter\\(k => typeof lc[k] === ''''function''''\\).join\\('''', ''''\\)\\)\")",
-      "Bash(npx vite:*)"
+      "Bash(npx vite:*)",
+      "Bash(xargs wc:*)",
+      "Bash(python3:*)"
     ]
   }
 }

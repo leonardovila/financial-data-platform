@@ -8,7 +8,7 @@ from .tv_candles_store import (
 )
 
 # Política inicial (simple pero correcta)
-BOOTSTRAP_BARS = 4500
+BOOTSTRAP_BARS = 8000
 MAX_CATCHUP_BARS = 600
 OVERLAP_BARS = 1 # Al no calcular derivadas de forma directa como hacia version previa, el overlap no se justifica
 

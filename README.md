@@ -1,215 +1,337 @@
-# Summary
+# financial-data-etl
 
-financial_data_etl is an incremental end-to-end data pipeline for US equity market data.
-It extracts historical data from TradingView, persists structured time-series into SQLite, and computes multi-horizon derived metrics.
+Full-stack financial data platform: batch ETL pipeline (2,425 symbols) + real-time WebSocket streaming + React terminal UI.
 
-# Quick Start – Local Installation
+**Live:** [leonardovila.com/financial](https://leonardovila.com/financial/)
 
-## Requirements
+---
 
-- Python ≥ 3.10
-- Git installed
-- Internet connection (required to fetch market data)
+## Architecture Overview
 
-## 1. Clone the repository
+The system has two execution modes that share the same data layer:
 
-Open a terminal and navigate to the directory where you want to download the project (for example, your Desktop):
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                     MODE 1: BATCH ETL (cron)                        │
+│                                                                     │
+│  catalog.json ─→ increment_plan ─→ WS Pool (6 conn) ─→ SQLite     │
+│  (2,425 syms)    (bootstrap/catchup)  (asyncio.Queue)    (WAL)     │
+│                                                                     │
+│  SQLite ─→ Pandas groupby ─→ performance_1d / volatility_1d /     │
+│             (vectorized)       volume_1d (bulk executemany)         │
+└─────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────┐
+│                  MODE 2: LIVE STREAMING (FastAPI)                    │
+│                                                                     │
+│  Browser WS ──→ /ws/live/{symbol}                                  │
+│                    │                                                │
+│                    ├─ SEED: SQLite → 4,500 bars + metrics (5-15ms) │
+│                    │                                                │
+│                    └─ EDGE: TradingView WS → in-memory DataFrame   │
+│                             → compute_all_metrics_live (<1ms)       │
+│                             → send_json({type:'tick', ...})         │
+│                                                                     │
+│  React UI ←── Zustand store ←── seed/tick/fundamentals/heartbeat   │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## Directory Structure
+
+```
+financial-data-etl/
+├── financial_data_etl/               # Python package
+│   ├── main_runner.py                # Batch ETL orchestrator (7 stages)
+│   │
+│   ├── scraping_pipeline/
+│   │   └── tv_websocket_connection/
+│   │       ├── call_execution/
+│   │       │   └── tradingview_ws.py       # WS protocol: batch multiplexing + live stream generator
+│   │       ├── call_specification/
+│   │       │   ├── asset_catalog.py        # catalog.json loader + provider symbol resolution
+│   │       │   ├── call_builder.py         # CallSpec factory
+│   │       │   └── timeframes_registry.py  # Timeframe constants
+│   │       ├── parsing/
+│   │       │   └── ohlcv_parser.py         # TradingView → [ts, o, h, l, c, v]
+│   │       └── tv_websocket_scraper.py     # Pool workers + asyncio.Queue + batch orchestration
+│   │
+│   ├── derived_metrics/
+│   │   ├── price_performance/
+│   │   │   ├── price_performance_runner.py # LAGS: ret_1d→ret_1y (Pandas pct_change)
+│   │   │   └── price_performance_store.py  # Bulk SQL read/write
+│   │   ├── volatility/
+│   │   │   ├── volatility_runner.py        # VOL_WINDOWS: vol_1w→vol_1y (rolling std of log returns)
+│   │   │   └── volatility_store.py
+│   │   └── volume/
+│   │       ├── volume_runner.py            # SMA_WINDOWS: [20, 50, 100, 200] + gap %
+│   │       └── volume_store.py
+│   │
+│   ├── storage/
+│   │   ├── tv_candles_store.py       # tv_candles_raw upsert
+│   │   ├── ohlcv_row_builder.py      # Candle normalization + partial bar detection
+│   │   ├── ohlcv_base_store.py       # Batch persist orchestration
+│   │   └── paths.py                  # DB_PATH constant
+│   │
+│   ├── api/                          # FastAPI live streaming layer
+│   │   ├── app.py                    # 8 REST + 1 WS endpoint + security + lifespan
+│   │   ├── db.py                     # SQLite connection factory (WAL + busy_timeout)
+│   │   ├── live_seed.py              # Cold-start: 5 SQL queries → full chart payload
+│   │   ├── live_state.py             # LiveSymbolState: 258-row in-memory DataFrame
+│   │   ├── live_compute.py           # Pure math: performance + volatility + volume (<1ms)
+│   │   └── live_session_manager.py   # Dedicated TV WS per subscriber
+│   │
+│   └── observability/
+│       └── run_context.py            # Structured JSON logging
+│
+├── frontend/                         # React + TypeScript + Vite
+│   └── src/
+│       ├── store/
+│       │   └── wsStore.ts            # Zustand: WS lifecycle, reconnection, state slices
+│       ├── components/
+│       │   ├── Chart.tsx             # Lightweight Charts v5 (autoSize, O(1) update)
+│       │   ├── TickStack.tsx         # Live feed: GPU slideIn, 50 desktop / 20 mobile
+│       │   ├── MetricsGrid.tsx       # Perf + Vol + Volume cards (scroll-snap tabs mobile)
+│       │   ├── MetricCard.tsx        # Individual metric card
+│       │   ├── FundamentalsBar.tsx   # Mkt Cap, P/E, EPS, Sector
+│       │   ├── SymbolSearch.tsx      # Inline search with autocomplete
+│       │   └── StatusBar.tsx         # Connection status, symbol, tick count
+│       ├── lib/
+│       │   └── formatters.ts         # Currency, percent, compact number formatting
+│       └── types/
+│           └── market.ts             # TypeScript interfaces for all WS payloads
+│
+├── catalog.json                      # 2,425 symbols with provider mappings
+├── bottlenecks.json                  # 20 architectural bottlenecks (19 closed)
+├── TECHNICAL_SHOWCASE.json           # Full engineering audit document
+└── tasks_for_websocket_production.json # Live streaming implementation roadmap
+```
+
+---
+
+## Quick Start
+
+### Requirements
+
+- Python >= 3.11
+- Node.js >= 18 (for frontend)
+
+### 1. Backend Setup
 
 ```bash
 git clone https://github.com/leonardovila/financial-data-etl.git
 cd financial-data-etl
-```
 
-You are now inside the project root directory.
-
-## 2. Create and activate a virtual environment
-
-Using a dedicated virtual environment is strongly recommended to isolate dependencies.
-
-### Windows (PowerShell)
-
-```bash
 python -m venv .venv
-.venv\Scripts\activate
-```
+# Windows: .venv\Scripts\activate
+# Linux/Mac: source .venv/bin/activate
 
-### macOS / Linux
-
-```bash
-python -m venv .venv
-source .venv/bin/activate
-```
-
-After activation, your terminal should display `(.venv)` at the beginning of the line.
-
-## 3. Install the project (editable mode)
-
-```bash
 pip install -e .
 ```
 
-This installs:
-
-- The `financial_data_etl` package
-- All required dependencies defined in `pyproject.toml`
-
-## 4. Run a test execution
-
-Execute a test run using a single asset:
+### 2. Run Batch ETL (single asset test)
 
 ```bash
 python -m financial_data_etl.main_runner --assets NVDA
 ```
 
-If everything is configured correctly, the system will:
-
-- Fetch historical market data from TradingView
-- Persist OHLCV and fundamentals into SQLite
-- Compute derived metrics (price performance, volatility, volume)
-- Generate structured logs and runtime artifacts
-
-## Expected Output
-
-After successful execution, the project root directory will contain:
-
-#### `financial_data_etl.db`
-
-SQLite database containing all persisted tables (extracted market data, fundamentals, derived metrics).
-
-#### `logs/`
-
-Structured execution logs generated through the internal run context system.
-
-#### `ws_traces/`
-
-Raw websocket traces from TradingView sessions.
-
-#### `catalog.json`
-
-Local runtime copy of the equity catalog (~2400+ US-listed equities).
-
----
-
-# Understanding the Output
-
-After execution, the generated SQLite database contains both extracted market data and derived metrics.
-
-## Why are there NULL values in some columns?
-
-In tables such as `performance_1d`, `volatility_1d`, and `volume_1d`, some columns may contain `NULL` values at the beginning of the dataset.
-
-This is expected behavior.
-
-Many derived metrics require a minimum historical window before they can be computed. For example:
-
-- A 1-month metric requires approximately one month of prior data.
-- A 1-year metric requires approximately one year of prior data.
-
-Until sufficient historical data is available, those fields will remain `NULL` by design.
-
-This does not indicate a system error.
-
-## Table Overview
-
-### `tv_candles_raw`
-
-Original daily market data (Open, High, Low, Close, Volume) extracted from TradingView.  
-All derived metrics are computed from this table.
-
-### `fundamentals_snapshot`
-
-Fundamental data extracted from TradingView (market cap, shares outstanding, sector, industry, etc.).
-
-### `performance_1d`
-
-Multi-horizon price performance metrics (returns over different time windows).
-
-### `volatility_1d`
-
-Rolling volatility metrics computed from daily price movements.
-
-### `volume_1d`
-
-Derived volume-based metrics calculated from raw trading volume.
-
----
-
-# System Overview
-
-This system performs a complete end-to-end data workflow for market data:
-
-1. It scrapes raw market and fundamental data from TradingView.
-2. It cleans and normalizes the collected data.
-3. It persists the cleaned data into a local database.
-4. It computes additional derived metrics based on the original data.
-5. It stores those derived metrics alongside the original data.
-
-The result is a structured dataset that includes both source data and analytical outputs, enabling further analysis or integration with other tools.
-
----
-
-# How to Use
-
-The pipeline can be executed in different modes depending on the scope of data you want to process.
-
-## 1. Run for selected assets
-
-You can specify one or multiple tickers using the `--assets` flag:
+Full index runs:
 
 ```bash
-python -m financial_data_etl.main_runner --assets NVDA
-python -m financial_data_etl.main_runner --assets NVDA TSLA COST KO
+python -m financial_data_etl.main_runner --dji          # Dow Jones (30 symbols)
+python -m financial_data_etl.main_runner --spx           # S&P 500
+python -m financial_data_etl.main_runner --spx --ndx     # S&P 500 + Nasdaq 100
 ```
 
-This will scrape, process, and persist data only for the specified symbols.
-
----
-
-## 2. Run for an entire index (universe)
-
-You can execute the pipeline for predefined US equity indexes:
-
-- `--spx` → S&P 500  
-- `--ndx` → Nasdaq 100  
-- `--rut` → Russell 2000  
-- `--dji` → Dow Jones Industrial Average  
-
-Example:
+### 3. Start Live API
 
 ```bash
-python -m financial_data_etl.main_runner --dji
+# Development (all security bypassed):
+DEBUG=1 uvicorn financial_data_etl.api.app:app --port 8000
+
+# Production:
+ALLOWED_ORIGINS=https://yourdomain.com uvicorn financial_data_etl.api.app:app --port 9999
 ```
 
-The Dow Jones index contains 30 equities, making it a good option for testing a full-index execution with moderate load.
+### 4. Frontend Development
+
+```bash
+cd frontend
+npm install
+npm run dev    # → http://localhost:5173
+```
+
+Requires `.env.development`:
+```
+VITE_WS_URL=ws://localhost:8000
+VITE_API_URL=http://localhost:8000
+```
+
+Production build:
+```bash
+npm run build  # Uses .env.production for domain URLs
+```
 
 ---
 
-## 3. Running multiple indexes
+## Batch ETL Pipeline (main_runner.py)
 
-You may combine index flags:
+Seven sequential stages, stage 6 parallelized:
+
+| Stage | Name | Action |
+|-------|------|--------|
+| 1 | Universe Resolution | Load catalog.json → 2,425 tickers |
+| 2 | Increment Plan | Query SQLite → determine n_candles per symbol (bootstrap=4500, catchup=3-25) |
+| 3 | WebSocket Scraping | 6 persistent connections drain asyncio.Queue. Multiplexed OHLCV+fundamentals per symbol. 3-layer timeout (recv=30s, send=10s, symbol=60s) |
+| 4 | OHLCV Persistence | Bulk executemany(). Calendar-aware partial bar detection (exchange_calendars cached per exchange) |
+| 5 | Fundamentals Persistence | Extract market_cap, P/E, EPS, shares, sector, industry → bulk upsert |
+| 6 | Derived Metrics | **ThreadPoolExecutor(3)** runs price_performance + volatility + volume **in parallel**. Each: 1 bulk SQL read (ROW_NUMBER PARTITION BY) → 1 Pandas DataFrame → groupby().rolling() → 1 bulk write |
+| 7 | Finalize | Close DB, output execution report |
+
+**Key optimization:** 21,600 individual SQL queries → 6 total (1 read + 1 write × 3 runners).
+
+---
+
+## Live Streaming API
+
+### Endpoints
+
+| Route | Type | Purpose |
+|-------|------|---------|
+| `GET /` | REST | Health check |
+| `GET /symbols` | REST | All symbols with company names (TTL cached 300s) |
+| `GET /ohlcv/history/{symbol}` | REST | Historical candles (max 4500) |
+| `GET /fundamentals/{symbol}` | REST | Latest fundamentals snapshot |
+| `GET /performance/1d/{symbol}` | REST | Price performance metrics |
+| `GET /volatility/1d/{symbol}` | REST | Volatility metrics |
+| `GET /volume/1d/{symbol}` | REST | Volume metrics |
+| **`WS /ws/live/{symbol}`** | **WebSocket** | **Seed & Edge live streaming** |
+| `GET /ws/stats` | REST | Active connections monitor |
+
+### WebSocket Protocol
+
+**Client → Server:**
+```json
+{"action": "switch", "symbol": "TSLA"}
+{"action": "ping"}
+```
+
+**Server → Client:**
+```json
+{"type": "seed", "symbol": "AAPL", "chart_candles": [...], "fundamentals": {...}, "metrics": {...}}
+{"type": "tick", "candle": {...}, "metrics": {"performance": {...}, "volatility": {...}, "volume": {...}}}
+{"type": "fundamentals", "data": {...}}
+{"type": "company_name", "name": "Apple Inc"}
+{"type": "heartbeat"}
+{"type": "session_expired"}
+{"type": "idle_warning"}
+```
+
+### Security
+
+- **Origin validation:** Pre-accept check against `ALLOWED_ORIGINS` whitelist
+- **Demo token:** Optional `?token=xxx` query param (env: `LIVE_DEMO_TOKEN`)
+- **Connection limit:** MAX_CONNECTIONS=5
+- **Zombie protection:** 2h hard TTL, 5min idle warning, 10min idle disconnect
+- **CORS:** Conditional — `["*"]` only in `DEBUG=1` mode
+
+---
+
+## SQLite Schema
+
+All tables use WAL mode with `busy_timeout=5000`.
+
+| Table | Primary Key | Description |
+|-------|-------------|-------------|
+| `tv_candles_raw` | `(symbol, timeframe, ts)` | Daily OHLCV candles |
+| `fundamentals_snapshot` | `(symbol, as_of_ts)` | Market cap, P/E, EPS, sector, industry |
+| `performance_1d` | `(symbol, timeframe, ts)` | ret_1d, ret_1w, ret_1m, ret_3m, ret_6m, ret_1y |
+| `volatility_1d` | `(symbol, timeframe, ts)` | range_intraday, vol_1w→vol_1y (annualized, ddof=1) |
+| `volume_1d` | `(symbol, timeframe, ts)` | volume_usd, vol_sma_20→200, vol_gap_20→200 |
+
+---
+
+## Key Constants
+
+```python
+# Derived metrics windows
+LAGS = {"ret_1d": 1, "ret_1w": 5, "ret_1m": 21, "ret_3m": 63, "ret_6m": 126, "ret_1y": 252}
+VOL_WINDOWS = {"vol_1w": 5, "vol_1m": 21, "vol_3m": 63, "vol_6m": 126, "vol_1y": 252}
+SMA_WINDOWS = [20, 50, 100, 200]
+ANNUALIZATION_FACTOR = sqrt(252)  # ≈ 15.87
+
+# Live state
+MAX_BARS = 258  # Buffer for all metric windows: max(252, 200) + overlap
+
+# WebSocket timeouts
+RECV_TIMEOUT = 30       # per ws.recv()
+SEND_TIMEOUT = 10       # per ws.send()
+SYMBOL_TIMEOUT = 60     # per-symbol outer timeout
+CONNECT_MAX_RETRIES = 3 # exponential backoff: 1s, 2s, 4s
+STREAM_RECV_TIMEOUT = 45  # live stream (more generous for quiet markets)
+```
+
+---
+
+## CLI Reference
 
 ```bash
+# Single assets
+python -m financial_data_etl.main_runner --assets NVDA TSLA COST
+
+# Index universes
+python -m financial_data_etl.main_runner --spx          # S&P 500
+python -m financial_data_etl.main_runner --ndx          # Nasdaq 100
+python -m financial_data_etl.main_runner --rut          # Russell 2000
+python -m financial_data_etl.main_runner --dji          # Dow Jones 30
+
+# Combined
 python -m financial_data_etl.main_runner --spx --ndx
-```
 
-Keep in mind that running large indexes simultaneously (e.g., S&P 500 + Russell 2000) will significantly increase execution time and system load, as thousands of equities may be processed.
-
----
-
-## 4. Updating index composition
-
-Index compositions may change over time due to additions or removals of constituents.
-
-To refresh the local catalog with the latest index composition, use:
-
-```bash
+# Update catalog with latest index composition
 python -m financial_data_etl.main_runner --spx --update-universe
 ```
 
-When `--update-universe` is enabled:
+### Environment Variables
 
-- The system retrieves the current index composition.
-- The local catalog is updated accordingly.
-- Subsequent runs will reflect the updated universe.
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `WS_POOL_SIZE` | 20 | WebSocket connection pool size (TradingView caps at 6) |
+| `SYMBOLS_PER_BATCH` | 1 | Symbols multiplexed per connection per batch cycle |
+| `DEBUG` | (unset) | Set to `1` to bypass CORS + origin checks |
+| `ALLOWED_ORIGINS` | localhost:3000,5173 | Comma-separated origin whitelist |
+| `LIVE_DEMO_TOKEN` | (unset) | If set, require `?token=xxx` on WS connections |
 
-This ensures that the system remains aligned with real-world index changes.
+---
+
+## Production Deployment (VPS)
+
+```
+Nginx (443 SSL) ─→ /financial/       → static React (Vite build)
+                 ─→ /financial-api/  → proxy_pass :9999 (FastAPI REST)
+                 ─→ /ws/             → proxy_pass :9999 (WebSocket upgrade)
+```
+
+Backend:
+```bash
+ALLOWED_ORIGINS=https://yourdomain.com \
+  uvicorn financial_data_etl.api.app:app --host 127.0.0.1 --port 9999
+```
+
+Frontend `.env.production`:
+```
+VITE_API_URL=https://yourdomain.com/financial-api
+VITE_WS_URL=wss://yourdomain.com
+```
+
+---
+
+## Companion Documents
+
+| File | Purpose |
+|------|---------|
+| `TECHNICAL_SHOWCASE.json` | Complete engineering audit: stack, lifecycle, optimizations, justifications |
+| `bottlenecks.json` | 20 cataloged architectural bottlenecks with resolution history |
+| `tasks_for_websocket_production.json` | Live streaming implementation roadmap (LIVE-01 → LIVE-10) |
+| `FRONTEND_PLAN.json` | Frontend component plan (FRONT-001 → FRONT-010) |
