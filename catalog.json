@@ -1,9 +1,51 @@
 {
+  "RKLB": {
+    "provider_symbol": {
+      "tradingview": "NASDAQ:RKLB"
+    },
+    "ticker": "RKLB"
+  },
+  "ASTS": {
+    "provider_symbol": {
+      "tradingview": "NASDAQ:ASTS"
+    },
+    "ticker": "ASTS"
+  },
+  "SOFI": {
+    "provider_symbol": {
+      "tradingview": "NASDAQ:SOFI"
+    },
+    "ticker": "SOFI"
+  },
+  "SPY": {
+    "provider_symbol": {
+      "tradingview": "AMEX:SPY"
+    },
+    "ticker": "SPY"
+  },
   "SPX": {
     "provider_symbol": {
       "tradingview": "TVC:SPX"
     },
     "ticker": "SPX"
+  },
+  "NDX": {
+    "provider_symbol": {
+      "tradingview": "TVC:NDX"
+    },
+    "ticker": "NDX"
+  },
+  "RUT": {
+    "provider_symbol": {
+      "tradingview": "TVC:RUT"
+    },
+    "ticker": "RUT"
+  },
+  "DJI": {
+    "provider_symbol": {
+      "tradingview": "TVC:DJI"
+    },
+    "ticker": "DJI"
   },
   "LOWN": {
     "provider_symbol": {
