@@ -6,11 +6,13 @@ __pycache__/
 *.pyc
 *.pyo
 *.pyd
+*claude.md
 
 # Build / packaging artifacts
 financial_data_etl.egg-info/
 build/
 dist/
+ignorar/
 
 # Local runtime artifacts
 logs/
