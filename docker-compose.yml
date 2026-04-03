@@ -1,0 +1,81 @@
+# ────────────────────────────────────────────────────────
+#  financial-data-etl  ·  Local development stack
+#
+#  Services:
+#    api       — FastAPI live streaming (always running)
+#    etl       — Batch pipeline (run on demand)
+#    frontend  — Nginx serving React SPA
+#
+#  Storage:
+#    db_data   — Named volume for SQLite (shared api <-> etl)
+#
+#  Usage:
+#    docker compose up -d api frontend   # start API + UI
+#    docker compose run etl --dji        # run ETL for Dow Jones
+#    docker compose down                 # stop everything
+# ────────────────────────────────────────────────────────
+
+services:
+
+  # ── Live Streaming API (always-on) ──────────────────
+  # AWS equivalent: ECS Fargate Service (desired_count=1)
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    volumes:
+      - db_data:/data
+    environment:
+      - FORGE_DB_PATH=/data/financial_data_etl.db
+      - DEBUG=1
+      - ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # ── Batch ETL (on-demand) ───────────────────────────
+  # AWS equivalent: ECS Fargate Task (run via EventBridge/cron)
+  #
+  # This is NOT a long-running service. You invoke it:
+  #   docker compose run etl --dji
+  #   docker compose run etl --spx --ndx
+  #   docker compose run etl --assets NVDA TSLA
+  etl:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - db_data:/data
+    environment:
+      - FORGE_DB_PATH=/data/financial_data_etl.db
+    # Override the default CMD (uvicorn) with the ETL entrypoint
+    entrypoint: ["python", "-m", "financial_data_etl.main_runner"]
+    # No restart, no ports — runs once and exits
+    profiles:
+      - tools
+
+  # ── Frontend (Nginx + React SPA) ────────────────────
+  # AWS equivalent: S3 bucket + CloudFront distribution
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_URL: http://localhost:8000
+        VITE_WS_URL: ws://localhost:8000
+    ports:
+      - "3000:3000"
+    depends_on:
+      api:
+        condition: service_healthy
+
+volumes:
+  db_data:
+    # Named volume — persists across container restarts.
+    # Docker manages it at /var/lib/docker/volumes/...
+    # This is our SQLite storage until we migrate to PostgreSQL/RDS.

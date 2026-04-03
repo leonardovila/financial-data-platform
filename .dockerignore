@@ -1,0 +1,32 @@
+# ── Python ──
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+dist/
+
+# ── Node ──
+frontend/node_modules/
+frontend/dist/
+
+# ── Runtime artifacts (generated inside containers) ──
+logs/
+ws_traces/
+*.db
+*.sqlite
+*.sqlite3
+
+# ── Secrets & local config ──
+private_config.json
+.env
+
+# ── Git & IDE ──
+.git/
+.gitignore
+*.md
+ignorar/
+
+# ── OS noise ──
+.DS_Store
+Thumbs.db
