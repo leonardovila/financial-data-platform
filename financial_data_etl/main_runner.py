@@ -39,6 +39,14 @@ def build_cli_parser() -> argparse.ArgumentParser:
         help="Universe: explicit assets list. Example: --assets AAPL MSFT BTCUSDT",
     )
 
+    # NUEVO: Control de timeframe
+    parser.add_argument(
+        "--timeframe",
+        type=str,
+        default="1d",
+        help="Resolución temporal de las velas (ej. 1d, 5m). Por defecto: 1d."
+    )
+
     return parser
 
 def parse_cli(argv: Optional[List[str]] = None) -> argparse.Namespace:
@@ -64,7 +72,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         # -------------------------
         # 2️⃣ Build incremental plan
         # -------------------------
-        timeframe = "1d"
+        timeframe = args.timeframe
 
         with ctx.span("increment_plan", symbols=len(symbols), timeframe=timeframe):
             plan = build_increment_plan(symbols, timeframe=timeframe, ctx=ctx)

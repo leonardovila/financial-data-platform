@@ -17,6 +17,7 @@ TF_SECONDS = {
     "1d": 86400,
     "1h": 3600,
     "4h": 14400,
+    "5m": 300,
 }
 
 def build_increment_plan(
