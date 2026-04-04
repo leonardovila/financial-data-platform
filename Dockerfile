@@ -15,39 +15,38 @@ FROM python:3.11-slim AS builder
 
 WORKDIR /build
 
-# Install build dependencies first (layer caching: this only
-# reruns when pyproject.toml changes, not on every code edit)
+# libpq-dev needed to compile psycopg2
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY pyproject.toml .
 RUN pip install --no-cache-dir --prefix=/install .
 
 # ── Stage 2: Runtime ──────────────────────────────────
 FROM python:3.11-slim AS runtime
 
-# Non-root user (security best practice — containers should
-# never run as root unless they need to bind privileged ports)
+# libpq is needed at runtime for psycopg2 to talk to PostgreSQL
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libpq5 \
+    && rm -rf /var/lib/apt/lists/*
+
 RUN groupadd --gid 1000 app && \
     useradd  --uid 1000 --gid app --create-home app
 
 WORKDIR /app
 
-# Copy installed packages from builder
 COPY --from=builder /install /usr/local
-
-# Copy application code
 COPY financial_data_etl/ ./financial_data_etl/
 
-# Create directories for runtime artifacts
-RUN mkdir -p /data logs ws_traces && \
-    chown -R app:app /app /data
+RUN mkdir -p logs ws_traces && \
+    chown -R app:app /app
 
-# Default DB path → /data/ volume (overridable via env)
-ENV FORGE_DB_PATH=/data/financial_data_etl.db
 ENV PYTHONUNBUFFERED=1
 
 USER app
 
 EXPOSE 8000
 
-# Default: run the API. Override in docker-compose for ETL.
 CMD ["uvicorn", "financial_data_etl.api.app:app", \
      "--host", "0.0.0.0", "--port", "8000"]
