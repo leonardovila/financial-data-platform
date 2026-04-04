@@ -2,15 +2,13 @@ from typing import Dict, List, Optional
 from financial_data_etl.observability.run_context import RunContext
 import time
 
-from .tv_candles_store import (
-    init_tv_candles_schema,
-    _get_connection,   # usamos conexión directa para query masiva
-)
+from .tv_candles_store import init_tv_candles_schema
+from financial_data_etl.storage.database import get_connection, fetchall, PH
 
 # Política inicial (simple pero correcta)
 BOOTSTRAP_BARS = 8000
 MAX_CATCHUP_BARS = 600
-OVERLAP_BARS = 1 # Al no calcular derivadas de forma directa como hacia version previa, el overlap no se justifica
+OVERLAP_BARS = 1
 
 # segundos por timeframe (extensible luego)
 TF_SECONDS = {
@@ -28,11 +26,6 @@ def build_increment_plan(
 ) -> Dict[str, int]:
     """
     Devuelve dict {symbol: n_candles_hint}
-
-    Hace:
-      - init schema
-      - query masiva de últimos timestamps
-      - cálculo incremental eficiente
     """
 
     init_tv_candles_schema()
@@ -51,19 +44,21 @@ def build_increment_plan(
     # ==============================
     # Query masiva
     # ==============================
-    placeholders = ",".join("?" for _ in symbols)
+    ph_list = ",".join(PH for _ in symbols)
 
     query = f"""
         SELECT symbol, MAX(ts) as last_ts
         FROM tv_candles_raw
-        WHERE timeframe = ?
-          AND symbol IN ({placeholders})
+        WHERE timeframe = {PH}
+          AND symbol IN ({ph_list})
         GROUP BY symbol
     """
 
-    with _get_connection() as conn:
-        cur = conn.execute(query, [timeframe] + symbols)
-        rows = cur.fetchall()
+    conn = get_connection()
+    try:
+        rows = fetchall(conn, query, [timeframe] + symbols)
+    finally:
+        conn.close()
 
     # Convertimos a dict
     last_map = {row[0]: row[1] for row in rows}

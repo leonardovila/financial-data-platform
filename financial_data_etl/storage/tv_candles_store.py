@@ -1,20 +1,9 @@
-from pathlib import Path
-import sqlite3
 from typing import Optional, Dict, Any, List
 import time
 
-
-# DB estable en /financial_data_etl
-from financial_data_etl.storage.paths import DB_PATH
-# ==============================
-# Connection
-# ==============================
-
-def _get_connection() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute("PRAGMA journal_mode=WAL;")
-    conn.execute("PRAGMA synchronous=NORMAL;")
-    return conn
+from financial_data_etl.storage.database import (
+    get_connection, transaction, execute, executemany, fetchone, PH,
+)
 
 
 # ==============================
@@ -22,22 +11,19 @@ def _get_connection() -> sqlite3.Connection:
 # ==============================
 
 def init_tv_candles_schema() -> None:
-    """
-    Crea la tabla base de time series si no existe.
-    """
-    with _get_connection() as conn:
-        conn.execute("""
+    with transaction() as conn:
+        execute(conn, """
         CREATE TABLE IF NOT EXISTS tv_candles_raw (
             symbol TEXT NOT NULL,
             timeframe TEXT NOT NULL,
-            ts INTEGER NOT NULL,
-            open REAL,
-            high REAL,
-            low REAL,
-            close REAL,
-            volume REAL,
+            ts BIGINT NOT NULL,
+            open DOUBLE PRECISION,
+            high DOUBLE PRECISION,
+            low DOUBLE PRECISION,
+            close DOUBLE PRECISION,
+            volume DOUBLE PRECISION,
             is_partial INTEGER DEFAULT 0,
-            ingested_at INTEGER NOT NULL,
+            ingested_at BIGINT NOT NULL,
             PRIMARY KEY (symbol, timeframe, ts)
         );
         """)
@@ -47,29 +33,23 @@ def init_tv_candles_schema() -> None:
 # ==============================
 
 def get_last_timestamp(symbol: str, timeframe: str) -> Optional[int]:
-    """
-    Devuelve el último timestamp completo (is_partial = 0).
-    """
-    with _get_connection() as conn:
-        cur = conn.execute("""
+    conn = get_connection()
+    try:
+        row = fetchone(conn, f"""
             SELECT MAX(ts)
             FROM tv_candles_raw
-            WHERE symbol = ?
-              AND timeframe = ?
+            WHERE symbol = {PH}
+              AND timeframe = {PH}
         """, (symbol, timeframe))
-
-        row = cur.fetchone()
         return row[0] if row and row[0] is not None else None
-        #AND is_partial = 0 -> esto veremos luego
+    finally:
+        conn.close()
 
 # ==============================
 # Persistence
 # ==============================
 
 def upsert_rows(rows: List[Dict[str, Any]], chunk_size: int = 9000) -> None:
-    """
-    Upsert batch multi-symbol con chunking interno.
-    """
     if not rows:
         return
 
@@ -79,7 +59,7 @@ def upsert_rows(rows: List[Dict[str, Any]], chunk_size: int = 9000) -> None:
         for i in range(0, len(seq), size):
             yield seq[i:i + size]
 
-    with _get_connection() as conn:
+    with transaction() as conn:
         for chunk in chunker(rows, chunk_size):
 
             values = []
@@ -97,20 +77,20 @@ def upsert_rows(rows: List[Dict[str, Any]], chunk_size: int = 9000) -> None:
                     now,
                 ))
 
-            conn.executemany("""
+            executemany(conn, f"""
             INSERT INTO tv_candles_raw (
                 symbol, timeframe, ts,
                 open, high, low, close, volume,
                 is_partial, ingested_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES ({PH}, {PH}, {PH}, {PH}, {PH}, {PH}, {PH}, {PH}, {PH}, {PH})
             ON CONFLICT(symbol, timeframe, ts)
             DO UPDATE SET
-                open=excluded.open,
-                high=excluded.high,
-                low=excluded.low,
-                close=excluded.close,
-                volume=excluded.volume,
-                is_partial=excluded.is_partial,
-                ingested_at=excluded.ingested_at;
+                open=EXCLUDED.open,
+                high=EXCLUDED.high,
+                low=EXCLUDED.low,
+                close=EXCLUDED.close,
+                volume=EXCLUDED.volume,
+                is_partial=EXCLUDED.is_partial,
+                ingested_at=EXCLUDED.ingested_at
             """, values)

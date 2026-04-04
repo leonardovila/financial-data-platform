@@ -1,48 +1,44 @@
-import sqlite3
 from datetime import datetime
 from typing import Dict, Any
+
 from financial_data_etl.observability.run_context import RunContext
-from financial_data_etl.storage.paths import DB_PATH
+from financial_data_etl.storage.database import (
+    transaction, execute, executemany, PH,
+)
 
-def _get_connection() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute("PRAGMA journal_mode=WAL;")
-    conn.execute("PRAGMA synchronous=NORMAL;")
-    return conn
 
-def _ensure_table_exists(conn: sqlite3.Connection) -> None:
-    conn.execute("""
+def _ensure_table_exists(conn) -> None:
+    execute(conn, """
         CREATE TABLE IF NOT EXISTS fundamentals_snapshot (
             symbol TEXT NOT NULL,
             as_of_ts TEXT NOT NULL,
             company_name TEXT,
-            market_cap REAL,
-            pe_ttm REAL,
-            eps_ttm REAL,
-            shares_outstanding REAL,
+            market_cap DOUBLE PRECISION,
+            pe_ttm DOUBLE PRECISION,
+            eps_ttm DOUBLE PRECISION,
+            shares_outstanding DOUBLE PRECISION,
             sector TEXT,
             industry TEXT,
             PRIMARY KEY (symbol, as_of_ts)
         );
     """)
-    conn.commit()
+
 
 def persist_fundamentals_snapshot(
     all_batch_data: Dict[str, Dict[str, Any]],
     ctx: RunContext,
 ) -> None:
 
-    with _get_connection() as conn:
+    with transaction() as conn:
         _ensure_table_exists(conn)
         as_of_ts = datetime.now().isoformat()
 
-        # Recolectamos todos los valores en memoria (C-level array via list)
         values_to_insert = []
         for symbol, payload in all_batch_data.items():
             fundamentals = payload.get("fundamentals")
             if not fundamentals:
                 continue
-            
+
             values_to_insert.append((
                 symbol,
                 as_of_ts,
@@ -55,24 +51,23 @@ def persist_fundamentals_snapshot(
                 fundamentals.get("industry"),
             ))
 
-        # Upsert masivo de un solo golpe (Bulk write)
         if values_to_insert:
-            conn.executemany(
-                """
-                INSERT OR REPLACE INTO fundamentals_snapshot (
-                    symbol,
-                    as_of_ts,
-                    company_name,
-                    market_cap,
-                    pe_ttm,
-                    eps_ttm,
-                    shares_outstanding,
-                    sector,
-                    industry
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
-                """,
-                values_to_insert
-            )
+            executemany(conn, f"""
+                INSERT INTO fundamentals_snapshot (
+                    symbol, as_of_ts, company_name,
+                    market_cap, pe_ttm, eps_ttm,
+                    shares_outstanding, sector, industry
+                ) VALUES ({PH}, {PH}, {PH}, {PH}, {PH}, {PH}, {PH}, {PH}, {PH})
+                ON CONFLICT(symbol, as_of_ts)
+                DO UPDATE SET
+                    company_name=EXCLUDED.company_name,
+                    market_cap=EXCLUDED.market_cap,
+                    pe_ttm=EXCLUDED.pe_ttm,
+                    eps_ttm=EXCLUDED.eps_ttm,
+                    shares_outstanding=EXCLUDED.shares_outstanding,
+                    sector=EXCLUDED.sector,
+                    industry=EXCLUDED.industry
+            """, values_to_insert)
 
         ctx.event(
             "fundamentals_snapshot_summary",

@@ -13,7 +13,7 @@ import math
 from typing import List
 import pandas as pd
 import numpy as np
-from financial_data_etl.storage.tv_candles_store import _get_connection
+from financial_data_etl.storage.database import get_connection, fetchall, PH
 from financial_data_etl.derived_metrics.volatility.volatility_store import (
     init_volatility_schema,
     upsert_volatility_rows,
@@ -41,11 +41,11 @@ def run_volatility_1d(symbols: List[str], ctx=None) -> None:
     total_symbols = 0
     total_rows = 0
 
-    conn = _get_connection()
+    conn = get_connection()
     try:
         # ── BULK READ: one windowed query, all symbols ──
-        placeholders = ",".join("?" for _ in symbols)
-        raw = conn.execute(
+        ph_list = ",".join(PH for _ in symbols)
+        raw = fetchall(conn,
             f"""
             SELECT symbol, ts, high, low, close, is_partial
             FROM (
@@ -53,15 +53,15 @@ def run_volatility_1d(symbols: List[str], ctx=None) -> None:
                        ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY ts DESC) AS rn
                 FROM tv_candles_raw
                 WHERE timeframe='1d'
-                  AND symbol IN ({placeholders})
+                  AND symbol IN ({ph_list})
                   AND ts IS NOT NULL AND close IS NOT NULL
                   AND high IS NOT NULL AND low IS NOT NULL
-            )
-            WHERE rn <= ?
+            ) sub
+            WHERE rn <= {PH}
             ORDER BY symbol, ts ASC
             """,
             symbols + [WINDOW_BARS],
-        ).fetchall()
+        )
 
         if not raw:
             return

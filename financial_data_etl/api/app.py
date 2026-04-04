@@ -12,7 +12,6 @@ Monitoring:
   GET /ws/stats — active connections and TV session pool status
 """
 
-import sqlite3
 import time
 import asyncio
 import logging
@@ -23,7 +22,9 @@ from urllib.parse import parse_qs
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
-from financial_data_etl.api.db import get_connection
+from financial_data_etl.storage.database import (
+    get_connection, get_dict_connection, fetchall, fetchone_dict, PH,
+)
 from financial_data_etl.api.live_session_manager import LiveSessionManager
 from financial_data_etl.api.live_state import LiveSymbolState
 from financial_data_etl.api.live_seed import load_historical_seed
@@ -73,9 +74,30 @@ LIVE_DEMO_TOKEN = os.environ.get("LIVE_DEMO_TOKEN")
 # LIFECYCLE: startup + shutdown (LIVE-07 folded in)
 # ──────────────────────────────────────────────────────────────────────────────
 
+def _ensure_schema():
+    """Create all tables if they don't exist. Idempotent — safe to call every startup."""
+    from financial_data_etl.storage.tv_candles_store import init_tv_candles_schema
+    from financial_data_etl.storage.fundamentals_store import _ensure_table_exists
+    from financial_data_etl.derived_metrics.price_performance.price_performance_store import init_performance_schema
+    from financial_data_etl.derived_metrics.volatility.volatility_store import init_volatility_schema
+    from financial_data_etl.derived_metrics.volume.volume_store import init_volume_schema
+    from financial_data_etl.universe.storage.universe_store import init_universe_schema
+
+    init_tv_candles_schema()
+    from financial_data_etl.storage.database import transaction
+    with transaction() as conn:
+        _ensure_table_exists(conn)
+    init_performance_schema()
+    init_volatility_schema()
+    init_volume_schema()
+    init_universe_schema()
+    logger.info("API startup: database schema verified")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # ── STARTUP ──
+    _ensure_schema()
     app.state.catalog = load_assets_catalog()
     app.state.session_manager = LiveSessionManager()
     app.state.active_connections: dict[int, dict] = {}  # id(ws) → metadata
@@ -121,20 +143,19 @@ def get_symbols():
 
     conn = get_connection()
     try:
-        # Get symbols
-        sym_rows = conn.execute(
+        sym_rows = fetchall(conn,
             "SELECT DISTINCT symbol FROM tv_candles_raw ORDER BY symbol"
-        ).fetchall()
+        )
 
-        # Get latest company names (simple, no complex joins)
-        name_rows = conn.execute(
-            """
-            SELECT symbol, company_name FROM fundamentals_snapshot
-            WHERE rowid IN (
-                SELECT MAX(rowid) FROM fundamentals_snapshot GROUP BY symbol
-            )
-            """
-        ).fetchall()
+        name_rows = fetchall(conn, """
+            SELECT f.symbol, f.company_name
+            FROM fundamentals_snapshot f
+            INNER JOIN (
+                SELECT symbol, MAX(as_of_ts) AS max_ts
+                FROM fundamentals_snapshot
+                GROUP BY symbol
+            ) latest ON f.symbol = latest.symbol AND f.as_of_ts = latest.max_ts
+        """)
         name_map = {r[0]: r[1] for r in name_rows}
 
         _symbols_cache = [
@@ -152,22 +173,19 @@ def get_ohlcv_history(symbol: str, limit: int = 4500):
     limit = min(limit, 4500)
     conn = get_connection()
     try:
-        rows = conn.execute(
-            """
+        rows = fetchall(conn, f"""
             SELECT ts, open, high, low, close, volume
             FROM (
                 SELECT ts, open, high, low, close, volume
                 FROM tv_candles_raw
-                WHERE symbol = ?
+                WHERE symbol = {PH}
                   AND timeframe = '1d'
                   AND is_partial = 0
                 ORDER BY ts DESC
-                LIMIT ?
-            )
+                LIMIT {PH}
+            ) sub
             ORDER BY ts ASC
-            """,
-            (symbol.upper(), limit),
-        ).fetchall()
+        """, (symbol.upper(), limit))
         return [
             {"time": r[0], "open": r[1], "high": r[2],
              "low": r[3], "close": r[4], "volume": r[5]}
@@ -181,27 +199,17 @@ def get_ohlcv_history(symbol: str, limit: int = 4500):
 def get_latest_fundamentals(symbol: str):
     conn = get_connection()
     try:
-        conn.row_factory = sqlite3.Row
-        row = conn.execute(
-            """
+        row = fetchone_dict(conn, f"""
             SELECT symbol, as_of_ts, company_name, market_cap,
                    pe_ttm, eps_ttm, shares_outstanding, sector, industry
             FROM fundamentals_snapshot
-            WHERE symbol = ?
+            WHERE symbol = {PH}
             ORDER BY as_of_ts DESC
             LIMIT 1
-            """,
-            (symbol.upper(),),
-        ).fetchone()
+        """, (symbol.upper(),))
         if not row:
             return {"symbol": symbol.upper(), "data": None}
-        return {
-            "symbol": row["symbol"], "as_of_ts": row["as_of_ts"],
-            "company_name": row["company_name"], "market_cap": row["market_cap"],
-            "pe_ttm": row["pe_ttm"], "eps_ttm": row["eps_ttm"],
-            "shares_outstanding": row["shares_outstanding"],
-            "sector": row["sector"], "industry": row["industry"],
-        }
+        return dict(row)
     finally:
         conn.close()
 
@@ -210,25 +218,15 @@ def get_latest_fundamentals(symbol: str):
 def get_latest_performance_1d(symbol: str):
     conn = get_connection()
     try:
-        conn.row_factory = sqlite3.Row
-        row = conn.execute(
-            """
+        row = fetchone_dict(conn, f"""
             SELECT symbol, ts, ret_1d, ret_1w, ret_1m, ret_3m, ret_6m, ret_1y, computed_at
             FROM performance_1d
-            WHERE symbol = ? AND is_partial = 0
+            WHERE symbol = {PH} AND is_partial = 0
             ORDER BY ts DESC LIMIT 1
-            """,
-            (symbol.upper(),),
-        ).fetchone()
+        """, (symbol.upper(),))
         if not row:
             return {"symbol": symbol.upper(), "data": None}
-        return {
-            "symbol": row["symbol"], "ts": row["ts"],
-            "ret_1d": row["ret_1d"], "ret_1w": row["ret_1w"],
-            "ret_1m": row["ret_1m"], "ret_3m": row["ret_3m"],
-            "ret_6m": row["ret_6m"], "ret_1y": row["ret_1y"],
-            "computed_at": row["computed_at"],
-        }
+        return dict(row)
     finally:
         conn.close()
 
@@ -237,25 +235,15 @@ def get_latest_performance_1d(symbol: str):
 def get_latest_volatility_1d(symbol: str):
     conn = get_connection()
     try:
-        conn.row_factory = sqlite3.Row
-        row = conn.execute(
-            """
+        row = fetchone_dict(conn, f"""
             SELECT symbol, ts, range_intraday, vol_1w, vol_1m, vol_3m, vol_6m, vol_1y, computed_at
             FROM volatility_1d
-            WHERE symbol = ? AND is_partial = 0
+            WHERE symbol = {PH} AND is_partial = 0
             ORDER BY ts DESC LIMIT 1
-            """,
-            (symbol.upper(),),
-        ).fetchone()
+        """, (symbol.upper(),))
         if not row:
             return {"symbol": symbol.upper(), "data": None}
-        return {
-            "symbol": row["symbol"], "ts": row["ts"],
-            "range_intraday": row["range_intraday"],
-            "vol_1w": row["vol_1w"], "vol_1m": row["vol_1m"],
-            "vol_3m": row["vol_3m"], "vol_6m": row["vol_6m"],
-            "vol_1y": row["vol_1y"], "computed_at": row["computed_at"],
-        }
+        return dict(row)
     finally:
         conn.close()
 
@@ -264,27 +252,16 @@ def get_latest_volatility_1d(symbol: str):
 def get_latest_volume_1d(symbol: str):
     conn = get_connection()
     try:
-        conn.row_factory = sqlite3.Row
-        row = conn.execute(
-            """
+        row = fetchone_dict(conn, f"""
             SELECT symbol, ts, volume_usd, vol_sma_20, vol_sma_50, vol_sma_100, vol_sma_200,
                    vol_gap_20, vol_gap_50, vol_gap_100, vol_gap_200
             FROM volume_1d
-            WHERE symbol = ? AND is_partial = 0
+            WHERE symbol = {PH} AND is_partial = 0
             ORDER BY ts DESC LIMIT 1
-            """,
-            (symbol.upper(),),
-        ).fetchone()
+        """, (symbol.upper(),))
         if not row:
             return {"symbol": symbol.upper(), "data": None}
-        return {
-            "symbol": row["symbol"], "ts": row["ts"],
-            "volume_usd": row["volume_usd"],
-            "vol_sma_20": row["vol_sma_20"], "vol_sma_50": row["vol_sma_50"],
-            "vol_sma_100": row["vol_sma_100"], "vol_sma_200": row["vol_sma_200"],
-            "vol_gap_20": row["vol_gap_20"], "vol_gap_50": row["vol_gap_50"],
-            "vol_gap_100": row["vol_gap_100"], "vol_gap_200": row["vol_gap_200"],
-        }
+        return dict(row)
     finally:
         conn.close()
 
