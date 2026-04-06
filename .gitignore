@@ -7,16 +7,19 @@ __pycache__/
 *.pyo
 *.pyd
 *claude.md
+*transition_bible.json
 
 # Build / packaging artifacts
 financial_data_etl.egg-info/
 build/
 dist/
 ignorar/
-
+nginx_vps_info/
+aws/
 # Local runtime artifacts
 logs/
 ws_traces/
+.claude/
 
 # Local databases
 *.db
