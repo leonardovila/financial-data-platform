@@ -133,6 +133,19 @@ def root():
     return {"status": "api ok"}
 
 
+@app.get("/health")
+def health():
+    """
+    Liveness probe endpoint (P0_02).
+
+    Dead-simple: returns 200 if the FastAPI process is running.
+    Does NOT touch the DB, does NOT call external services.
+    This is what load balancers (ALB / nginx upstream) will poll
+    to decide whether this container is healthy and should receive traffic.
+    """
+    return {"status": "ok"}
+
+
 @app.get("/symbols")
 def get_symbols():
     global _symbols_cache, _symbols_cache_ts

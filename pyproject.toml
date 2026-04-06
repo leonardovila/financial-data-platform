@@ -12,6 +12,13 @@ dependencies = [
 description = "End-to-end incremental data pipeline for US financial market data"
 requires-python = ">=3.10"
 
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.4",
+    "httpx>=0.27",
+]
+
 [build-system]
 requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
@@ -22,3 +29,48 @@ include = ["financial_data_etl*"]
 
 [tool.setuptools.package-data]
 "financial_data_etl.universe.storage" = ["catalog.json"]
+
+# ──────────────────────────────────────────────────────────────────────────────
+# PYTEST CONFIG
+# ──────────────────────────────────────────────────────────────────────────────
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+addopts = [
+    "-ra",
+    "--strict-markers",
+    "-m", "not integration",
+]
+markers = [
+    "integration: marks tests that hit real network/DB (deselected by default; run with `pytest -m integration`)",
+]
+
+# ──────────────────────────────────────────────────────────────────────────────
+# RUFF CONFIG — GRADUAL MODE
+# Only lints tests/ for now. Legacy code in financial_data_etl/ is ignored
+# so CI stays green while we clean up incrementally in later PRs.
+# ──────────────────────────────────────────────────────────────────────────────
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+# Hard boundary: ruff only operates inside tests/
+include = ["tests/**/*.py"]
+extend-exclude = [
+    "financial_data_etl",
+    "standalone_tests",
+    "frontend",
+    "aws",
+    "nginx_vps_info",
+    "ignorar",
+    "logs",
+    "ws_traces",
+]
+
+[tool.ruff.lint]
+# Conservative rule set: errors (E), pyflakes (F), isort (I).
+# Enough to catch unused imports, undefined names, import ordering.
+select = ["E", "F", "I"]
+ignore = [
+    "E501",  # line too long (we set 120 above but leave slack)
+]
