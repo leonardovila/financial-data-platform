@@ -26,7 +26,7 @@ const MetricCard = memo(function MetricCard({ title, rows }: MetricCardProps) {
   return (
     <div className="bg-[var(--color-panel)] border border-[var(--color-border)] min-w-full snap-start sm:min-w-0">
       {/* Title */}
-      <div className="px-3 py-1.5 text-[10px] uppercase tracking-widest text-[var(--color-muted)] border-b border-[var(--color-border)]">
+      <div className="px-3 py-2 text-[11px] sm:text-xs uppercase tracking-widest text-[var(--color-text)] border-b border-[var(--color-border)] font-semibold">
         {title}
       </div>
 
@@ -77,12 +77,12 @@ const MetricValue = memo(function MetricValue({ row }: { row: MetricRow }) {
   return (
     <div
       ref={elRef}
-      className="flex items-center justify-between px-3 py-1 border-b border-[var(--color-border)]/30"
+      className="flex items-center justify-between px-3 py-1.5 border-b border-[var(--color-border)]/60"
     >
-      <span className="text-[10px] uppercase tracking-wider text-[var(--color-muted)] truncate">
+      <span className="text-[11px] sm:text-xs uppercase tracking-wider text-[var(--color-muted)] truncate">
         {label}
       </span>
-      <span className={`text-xs font-mono tabular-nums text-right ${colorCls}`}>
+      <span className={`text-sm sm:text-base font-mono tabular-nums text-right ${colorCls}`}>
         {displayValue}
       </span>
     </div>

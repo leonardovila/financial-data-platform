@@ -1,7 +1,7 @@
 // ──────────────────────────────────────────────────────────────────────────────
 // FRONT-005: TickStack — brutalist live order-flow feed
 //
-// Desktop: persistent right sidebar, 50 rows, 4 columns (time, price, delta, vol).
+// Desktop: persistent right sidebar, 50 rows, 3 columns (time, price, delta).
 // Mobile:  hidden by default. Floating "FEED" pill → bottom-sheet overlay.
 //          20 rows, 3 columns (time, price, delta). h-9 touch rows.
 //
@@ -29,7 +29,7 @@ const TickRow = memo(function TickRow({ tick, prevClose, isFirst }: TickRowProps
   return (
     <div
       className={[
-        "flex items-center gap-1 px-2 font-mono text-xs",
+        "flex items-center gap-4 px-2 font-mono text-xs sm:text-sm",
         // Desktop: h-7 dense. Mobile: h-9 touch-friendly.
         "h-9 sm:h-7",
         // Alternating bg — odd rows get panel bg
@@ -38,26 +38,21 @@ const TickRow = memo(function TickRow({ tick, prevClose, isFirst }: TickRowProps
         isFirst ? "animate-[slideIn_150ms_ease-out]" : "",
       ].join(" ")}
     >
-      {/* Time */}
-      <span className="shrink-0 w-16 text-[var(--color-muted)]">
+      {/* Time — w-[68px] holds "12:03:45" in font-mono without truncating */}
+      <span className="shrink-0 w-[68px] text-[var(--color-muted)] tabular-nums">
         {formatTimestamp(tick.ts)}
       </span>
 
-      {/* Price */}
-      <span className="flex-1 min-w-0 truncate text-right text-[var(--color-text)]">
+      {/* Price — content-sized, sits right next to Time with gap-4 */}
+      <span className="shrink-0 truncate text-[var(--color-text)] tabular-nums">
         {formatCurrency(candle.close)}
       </span>
 
-      {/* Delta */}
-      <span className={`shrink-0 w-18 text-right ${delta !== null ? signClass(delta) : "text-[var(--color-muted)]"}`}>
+      {/* Delta — sits right next to Price (no ml-auto), trailing space goes to the right */}
+      <span className={`shrink-0 w-16 text-right tabular-nums ${delta !== null ? signClass(delta) : "text-[var(--color-muted)]"}`}>
         {delta !== null
           ? `${delta >= 0 ? "+" : ""}${delta.toFixed(2)}`
           : "—"}
-      </span>
-
-      {/* Volume — hidden on mobile, visible on sm+ */}
-      <span className="hidden sm:block shrink-0 w-20 text-right text-[var(--color-muted)]">
-        {formatCurrency(candle.volume, 0)}
       </span>
     </div>
   );
@@ -98,11 +93,10 @@ function TickList() {
 
 function TickHeader() {
   return (
-    <div className="flex items-center gap-1 px-2 h-6 text-[10px] uppercase tracking-widest text-[var(--color-muted)] border-b border-[var(--color-border)]">
-      <span className="shrink-0 w-16">Time</span>
-      <span className="flex-1 min-w-0 text-right">Price</span>
-      <span className="shrink-0 w-18 text-right">Delta</span>
-      <span className="hidden sm:block shrink-0 w-20 text-right">Volume</span>
+    <div className="flex items-center gap-4 px-2 h-7 text-[10px] uppercase tracking-widest text-[var(--color-muted)] border-b border-[var(--color-border)]">
+      <span className="shrink-0 w-[68px]">Time</span>
+      <span className="shrink-0">Price</span>
+      <span className="shrink-0 w-16 text-right">Delta</span>
     </div>
   );
 }
@@ -113,7 +107,7 @@ export function TickStackSidebar() {
   return (
     <div className="flex flex-col h-full bg-[var(--color-bg)] border-l border-[var(--color-border)]">
       <div className="px-2 py-1 text-[10px] uppercase tracking-widest text-[var(--color-muted)] border-b border-[var(--color-border)]">
-        Live Feed
+        Live Price Feed
       </div>
       <TickHeader />
       <div className="flex-1 min-h-0 overflow-hidden">

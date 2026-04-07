@@ -122,12 +122,20 @@ export default function Chart() {
         if (!candleSeriesRef.current || !volumeSeriesRef.current) return;
 
         const raw = state.seedData.chart_candles;
-        if (raw.length === 0) return;
+
+        // Empty seed (symbol exists in TV but has no historical candles in our DB):
+        // We MUST clear the series here, otherwise the chart keeps showing the
+        // previous symbol's candles forever. Setting [] wipes the canvas cleanly.
+        if (raw.length === 0) {
+          candleSeriesRef.current.setData([]);
+          volumeSeriesRef.current.setData([]);
+          return;
+        }
 
         // Sanitize: deduplicate by ts (keep last), sort ascending
         const dedupMap = new Map<number, SeedCandle>();
         for (const c of raw) {
-          dedupMap.set(c[0], c); 
+          dedupMap.set(c[0], c);
         }
         const clean = Array.from(dedupMap.values()).sort((a, b) => a[0] - b[0]);
 

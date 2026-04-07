@@ -35,18 +35,18 @@ export default function Dashboard() {
       className={[
         "h-dvh w-full overflow-hidden bg-[var(--color-bg)]",
 
-        // ── ALL viewports: grid ──
-        "grid grid-cols-1",
+        // ── ALL viewports: grid with hairline gap so cards have margins (PL_01) ──
+        "grid grid-cols-1 gap-1",
 
         // ── MOBILE: header(48px) chart(1fr) metrics(auto) status(28px) ──
         "grid-rows-[48px_1fr_auto_28px]",
 
         // ── TABLET (≥640px): add fund row + ticks column ──
-        "sm:grid-cols-[65fr_35fr]",
+        "sm:grid-cols-[78fr_22fr]",
         "sm:grid-rows-[auto_auto_1fr_auto_auto]",
 
-        // ── DESKTOP (≥1280px): wider chart ──
-        "xl:grid-cols-[70fr_30fr]",
+        // ── DESKTOP (≥1280px): wider chart, narrower TickStack ──
+        "xl:grid-cols-[82fr_18fr]",
       ].join(" ")}
     >
       {/* ── ROW 1: Header ── */}
