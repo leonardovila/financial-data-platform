@@ -6,13 +6,13 @@
    ────────────────────────────────────────────────────────────────────────────── */
 
 @theme {
-  /* ── Palette ── */
-  --color-bg: #0a0a0a;
-  --color-panel: #111111;
-  --color-hover: #1a1a1a;
-  --color-border: #222222;
-  --color-text: #e0e0e0;
-  --color-muted: #666666;
+  /* ── Palette (PL_01: subtle violet/blue tint, brutalist intact) ── */
+  --color-bg: #0a0c18;
+  --color-panel: #131726;
+  --color-hover: #1c2236;
+  --color-border: #2d3450;
+  --color-text: #e6e8f0;
+  --color-muted: #7078a0;
   --color-neon: #00ff00;
   --color-red: #ff0044;
   --color-blue: #0088ff;
@@ -26,18 +26,18 @@
   --touch-min: 44px;
 }
 
-/* ── Responsive font density ── */
+/* ── Responsive font density (PL_01: +1px across the board for legibility) ── */
 html {
-  font-size: 11px;
+  font-size: 12px;
 }
 @media (min-width: 641px) {
   html {
-    font-size: 12px;
+    font-size: 13px;
   }
 }
 @media (min-width: 1025px) {
   html {
-    font-size: 13px;
+    font-size: 14px;
   }
 }
 

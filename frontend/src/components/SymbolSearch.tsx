@@ -197,7 +197,7 @@ export default function SymbolSearch() {
                 </span>
               )}
               {displayCompany && (
-                <span className="truncate text-xs text-[var(--color-muted)]">
+                <span className="truncate text-sm sm:text-base text-[var(--color-text)]">
                   — {displayCompany}
                 </span>
               )}

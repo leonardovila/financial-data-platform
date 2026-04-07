@@ -43,7 +43,7 @@ export default function FundamentalsBar() {
   ];
 
   return (
-    <div className="relative h-10 border-b border-[var(--color-border)] scroll-fade-right">
+    <div className="relative h-12 border-b border-[var(--color-border)] scroll-fade-right">
       <div
         className="flex items-center gap-0 h-full overflow-x-auto px-2"
         style={{ WebkitOverflowScrolling: "touch" }}
@@ -52,15 +52,15 @@ export default function FundamentalsBar() {
           <div
             key={item.label}
             className={[
-              "flex items-center gap-2 shrink-0 min-w-[80px] px-3 h-full",
-              i > 0 ? "border-l border-[var(--color-border)]/40" : "",
+              "flex items-center gap-2 shrink-0 min-w-[88px] px-3 h-full",
+              i > 0 ? "border-l border-[var(--color-border)]/60" : "",
             ].join(" ")}
           >
             <div className="flex flex-col justify-center min-w-0">
-              <span className="text-[9px] uppercase tracking-wider text-[var(--color-muted)] leading-none">
+              <span className="text-[10px] sm:text-[11px] uppercase tracking-wider text-[var(--color-muted)] leading-none">
                 {item.label}
               </span>
-              <span className="text-xs font-mono text-[var(--color-text)] truncate leading-tight mt-0.5">
+              <span className="text-sm font-mono text-[var(--color-text)] truncate leading-tight mt-1">
                 {item.value}
               </span>
             </div>
