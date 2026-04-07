@@ -9,7 +9,7 @@
 // React.memo on each row — only the newest row renders.
 // ──────────────────────────────────────────────────────────────────────────────
 
-import { memo, useState } from "react";
+import { memo } from "react";
 import { useWsStore } from "../stores/wsStore";
 import { formatCurrency, formatTimestamp, signClass } from "../lib/formatters";
 import type { TickPayload } from "../types/ws";
