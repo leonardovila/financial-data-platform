@@ -1,13 +1,17 @@
 // ──────────────────────────────────────────────────────────────────────────────
-// FRONT-006: MetricCard — single metric panel (Performance / Volatility / Volume)
+// FRONT-006: MetricCard — single metric panel (Performance / Volatility / Momentum)
 //
-// Brutalist: no rounded corners, #111111 bg, #222222 border.
+// Brutalist: no rounded corners, panel bg, panel border.
 // Flashes green/red on value change via CSS animation classes.
 // Desktop: 1-column key-value rows. Mobile: 2-column grid for density.
+//
+// PL_02/PL_03: Each row and the category title accept an optional `help` text.
+// When set, an InfoTooltip ? icon is rendered next to the label.
 // ──────────────────────────────────────────────────────────────────────────────
 
 import { memo, useRef, useEffect } from "react";
 import { signClass } from "../lib/formatters";
+import InfoTooltip from "./InfoTooltip";
 
 interface MetricRow {
   label: string;
@@ -15,19 +19,26 @@ interface MetricRow {
   format: (v: number) => string;
   /** If true, color the value green/red based on sign. If false, use muted. */
   colored?: boolean;
+  /** Plain-English help text for the InfoTooltip popup. */
+  help?: string;
 }
 
 interface MetricCardProps {
   title: string;
   rows: MetricRow[];
+  /** Plain-English help text for the category title (e.g. "Performance"). */
+  categoryHelp?: string;
 }
 
-const MetricCard = memo(function MetricCard({ title, rows }: MetricCardProps) {
+const MetricCard = memo(function MetricCard({ title, rows, categoryHelp }: MetricCardProps) {
   return (
     <div className="bg-[var(--color-panel)] border border-[var(--color-border)] min-w-full snap-start sm:min-w-0">
-      {/* Title */}
-      <div className="px-3 py-2 text-xs sm:text-sm uppercase tracking-widest text-[var(--color-text)] border-b border-[var(--color-border)] font-bold">
-        {title}
+      {/* Title + category tooltip */}
+      <div className="flex items-center justify-between gap-2 px-3 py-2 border-b border-[var(--color-border)]">
+        <span className="text-xs sm:text-sm uppercase tracking-widest text-[var(--color-text)] font-bold">
+          {title}
+        </span>
+        {categoryHelp && <InfoTooltip text={categoryHelp} size="md" />}
       </div>
 
       {/* Key-value grid: 2 cols on mobile, 1 col on sm+ */}
@@ -45,7 +56,7 @@ export default MetricCard;
 // ── Individual metric value with flash-on-change ──
 
 const MetricValue = memo(function MetricValue({ row }: { row: MetricRow }) {
-  const { label, value, format, colored = true } = row;
+  const { label, value, format, colored = true, help } = row;
   const prevRef = useRef<number | null | undefined>(undefined);
   const elRef = useRef<HTMLDivElement>(null);
 
@@ -77,11 +88,14 @@ const MetricValue = memo(function MetricValue({ row }: { row: MetricRow }) {
   return (
     <div
       ref={elRef}
-      className="flex items-center justify-between px-3 py-1.5 border-b border-[var(--color-border)]/60"
+      className="flex items-center justify-between gap-2 px-3 py-1.5 border-b border-[var(--color-border)]/60"
     >
-      <span className="text-[11px] sm:text-xs uppercase tracking-wider text-[var(--color-muted)] truncate">
-        {label}
-      </span>
+      <div className="flex items-center gap-1.5 min-w-0">
+        <span className="text-[11px] sm:text-xs uppercase tracking-wider text-[var(--color-muted)] truncate">
+          {label}
+        </span>
+        {help && <InfoTooltip text={help} size="sm" />}
+      </div>
       <span className={`text-sm sm:text-base font-mono tabular-nums text-right ${colorCls}`}>
         {displayValue}
       </span>

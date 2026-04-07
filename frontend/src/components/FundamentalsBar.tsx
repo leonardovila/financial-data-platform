@@ -8,10 +8,13 @@
 
 import { useWsStore } from "../stores/wsStore";
 import { formatLargeNumber } from "../lib/formatters";
+import InfoTooltip from "./InfoTooltip";
+import { FUNDAMENTALS_GLOSSARY } from "../lib/glossary";
 
 interface FundItem {
   label: string;
   value: string;
+  help: string;
 }
 
 function formatShares(val: number | null | undefined): string {
@@ -34,12 +37,12 @@ export default function FundamentalsBar() {
   if (!fundamentals) return null;
 
   const items: FundItem[] = [
-    { label: "Mkt Cap", value: formatLargeNumber(fundamentals.market_cap) },
-    { label: "P/E", value: formatDecimal(fundamentals.pe_ttm) },
-    { label: "EPS", value: fundamentals.eps_ttm != null ? `$${formatDecimal(fundamentals.eps_ttm)}` : "—" },
-    { label: "Shares", value: formatShares(fundamentals.shares_outstanding) },
-    { label: "Sector", value: fundamentals.sector ?? "—" },
-    { label: "Industry", value: fundamentals.industry ?? "—" },
+    { label: "Mkt Cap", value: formatLargeNumber(fundamentals.market_cap), help: FUNDAMENTALS_GLOSSARY.market_cap },
+    { label: "P/E", value: formatDecimal(fundamentals.pe_ttm), help: FUNDAMENTALS_GLOSSARY.pe_ttm },
+    { label: "EPS", value: fundamentals.eps_ttm != null ? `$${formatDecimal(fundamentals.eps_ttm)}` : "—", help: FUNDAMENTALS_GLOSSARY.eps_ttm },
+    { label: "Shares", value: formatShares(fundamentals.shares_outstanding), help: FUNDAMENTALS_GLOSSARY.shares_outstanding },
+    { label: "Sector", value: fundamentals.sector ?? "—", help: FUNDAMENTALS_GLOSSARY.sector },
+    { label: "Industry", value: fundamentals.industry ?? "—", help: FUNDAMENTALS_GLOSSARY.industry },
   ];
 
   return (
@@ -52,14 +55,17 @@ export default function FundamentalsBar() {
           <div
             key={item.label}
             className={[
-              "flex items-center gap-2 shrink-0 min-w-[88px] px-3 h-full",
+              "flex items-center gap-2 shrink-0 min-w-[96px] px-3 h-full",
               i > 0 ? "border-l border-[var(--color-border)]/60" : "",
             ].join(" ")}
           >
             <div className="flex flex-col justify-center min-w-0">
-              <span className="text-[10px] sm:text-[11px] uppercase tracking-wider text-[var(--color-muted)] leading-none">
-                {item.label}
-              </span>
+              <div className="flex items-center gap-1.5">
+                <span className="text-[10px] sm:text-[11px] uppercase tracking-wider text-[var(--color-muted)] leading-none">
+                  {item.label}
+                </span>
+                <InfoTooltip text={item.help} size="sm" />
+              </div>
               <span className="text-sm font-mono text-[var(--color-text)] truncate leading-tight mt-1">
                 {item.value}
               </span>

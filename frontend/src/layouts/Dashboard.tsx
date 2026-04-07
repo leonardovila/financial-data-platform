@@ -27,8 +27,8 @@ export default function Dashboard() {
 
         "grid grid-cols-1 gap-1",
 
-        // ── MOBILE: 5 filas ahora. header(48) chart(1fr) ticks(auto) metrics(auto) status(28) ──
-        "grid-rows-[48px_1fr_auto_auto_28px]",
+        // ── MOBILE: 6 filas. header(48) fundamentals(auto) chart(1fr) ticks(auto) metrics(auto) status(28) ──
+        "grid-rows-[48px_auto_1fr_auto_auto_28px]",
 
         // ── TABLET (≥640px) ──
         "sm:grid-cols-[78fr_22fr]",
@@ -43,8 +43,8 @@ export default function Dashboard() {
         <SymbolSearch />
       </div>
 
-      {/* ── ROW 2 (tablet+): FundamentalsBar ── */}
-      <div className="hidden sm:block sm:col-span-2">
+      {/* ── ROW 2: FundamentalsBar (Ahora visible en mobile y desktop) ── */}
+      <div className="sm:col-span-2 min-w-0">
         <FundamentalsBar />
       </div>
 

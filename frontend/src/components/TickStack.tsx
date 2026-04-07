@@ -13,6 +13,8 @@ import { memo } from "react";
 import { useWsStore } from "../stores/wsStore";
 import { formatCurrency, formatTimestamp, signClass } from "../lib/formatters";
 import type { TickPayload } from "../types/ws";
+import InfoTooltip from "./InfoTooltip";
+import { LIVE_FEED_GLOSSARY } from "../lib/glossary";
 
 // ── Single tick row (memoized — only new rows render) ──
 
@@ -112,7 +114,11 @@ export function TickStackSidebar() {
       {/* Header agresivo en neón con pulso para gritar LIVE en desktop */}
       <div className="px-2 py-1 text-[10px] text-[var(--color-neon)] font-bold uppercase tracking-widest border-b border-[var(--color-border)] flex items-center gap-2 bg-[var(--color-panel)]">
         <span className="inline-block w-1.5 h-1.5 rounded-full bg-[var(--color-neon)] pulse" />
-        LIVE PRICE FEED
+        <span>LIVE PRICE FEED</span>
+        {/* Forzamos normal-case y limpiamos el espaciado y la negrita heredada */}
+        <div className="ml-auto normal-case tracking-normal font-normal text-left text-[var(--color-text)]">
+          <InfoTooltip text={LIVE_FEED_GLOSSARY.description} size="sm" />
+        </div>
       </div>
       <TickHeader />
       
@@ -140,7 +146,11 @@ export function TickStackMobile() {
       {/* Indicador de estado LIVE */}
       <div className="px-2 py-1 text-[9px] text-[var(--color-neon)] font-bold uppercase tracking-widest border-b border-[var(--color-border)] flex items-center gap-2 bg-[var(--color-panel)]">
         <span className="inline-block w-1.5 h-1.5 rounded-full bg-[var(--color-neon)] pulse" />
-        LIVE PRICE FEED
+        <span>LIVE PRICE FEED</span>
+        {/* Forzamos normal-case y limpiamos el espaciado y la negrita heredada */}
+        <div className="ml-auto normal-case tracking-normal font-normal text-left text-[var(--color-text)]">
+          <InfoTooltip text={LIVE_FEED_GLOSSARY.description} size="sm" />
+        </div>
       </div>
       
       <TickHeader />
