@@ -46,6 +46,11 @@ export function formatPercent(val: number | null | undefined): string {
   return `${sign}${(val * 100).toFixed(2)}%`;
 }
 
+export function formatNumber(val: number | null | undefined, decimals = 2): string {
+  if (val == null || !isFinite(val)) return "—";
+  return val.toFixed(decimals);
+}
+
 export function formatTimestamp(unixTs: number): string {
   const d = new Date(unixTs * 1000);
   const h = d.getHours().toString().padStart(2, "0");

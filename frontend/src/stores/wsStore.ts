@@ -222,7 +222,7 @@ export const useWsStore = create<WsState>()((set, get) => {
     latestTick: null,
     tickHistory: [],
     fundamentals: null,
-    metrics: { performance: null, volatility: null, volume: null },
+    metrics: { performance: null, volatility: null, momentum: null },
     isMarketOpen: false,
 
     // ── connect ──
@@ -246,7 +246,7 @@ export const useWsStore = create<WsState>()((set, get) => {
         tickHistory: [],
         companyName: null,
         fundamentals: null,
-        metrics: { performance: null, volatility: null, volume: null },
+        metrics: { performance: null, volatility: null, momentum: null },
         isMarketOpen: false,
       });
 
@@ -325,7 +325,7 @@ export const useWsStore = create<WsState>()((set, get) => {
         tickHistory: [],
         companyName: null,
         fundamentals: null,
-        metrics: { performance: null, volatility: null, volume: null },
+        metrics: { performance: null, volatility: null, momentum: null },
         isMarketOpen: false,
         connectionError: null,
       });

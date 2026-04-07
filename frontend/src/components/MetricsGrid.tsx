@@ -1,17 +1,17 @@
 // ──────────────────────────────────────────────────────────────────────────────
-// FRONT-006: MetricsGrid — Performance / Volatility / Volume
+// FRONT-006: MetricsGrid — Performance / Volatility / Momentum
 //
 // Desktop (sm+): CSS grid-cols-3, all three cards visible simultaneously.
-// Mobile (<sm):  Scroll-snap tabs. Tab bar at top (PERFORMANCE | VOLATILITY | VOLUME).
+// Mobile (<sm):  Scroll-snap tabs. Tab bar at top (PERFORMANCE | VOLATILITY | MOMENTUM).
 //                One card visible at a time. Native iOS momentum swipe.
 // ──────────────────────────────────────────────────────────────────────────────
 
 import { useRef, useState, useEffect } from "react";
 import { useWsStore } from "../stores/wsStore";
 import MetricCard from "./MetricCard";
-import { formatPercent, formatLargeNumber } from "../lib/formatters";
+import { formatPercent, formatNumber } from "../lib/formatters";
 
-const TABS = ["PERFORMANCE", "VOLATILITY", "VOLUME"] as const;
+const TABS = ["PERFORMANCE", "VOLATILITY", "MOMENTUM"] as const;
 
 export default function MetricsGrid() {
   const metrics = useWsStore((s) => s.metrics);
@@ -36,13 +36,13 @@ export default function MetricsGrid() {
     { label: "Volatility 1Y", value: metrics.volatility?.vol_1y, format: formatPercent, colored: false },
   ];
 
-  const volumeRows = [
-    { label: "Volume USD", value: metrics.volume?.volume_usd, format: formatLargeNumber, colored: false },
-    { label: "Volume SMA 20", value: metrics.volume?.vol_sma_20, format: formatLargeNumber, colored: false },
-    { label: "Volume SMA 50", value: metrics.volume?.vol_sma_50, format: formatLargeNumber, colored: false },
-    { label: "Volume Gap 20", value: metrics.volume?.vol_gap_20, format: formatPercent },
-    { label: "Volume Gap 50", value: metrics.volume?.vol_gap_50, format: formatPercent },
-    { label: "Volume Gap 200", value: metrics.volume?.vol_gap_200, format: formatPercent },
+  const momentumRows = [
+    { label: "RSI 14", value: metrics.momentum?.rsi_14, format: formatNumber, colored: false },
+    { label: "SMA 20 Gap", value: metrics.momentum?.sma_20_gap, format: formatPercent },
+    { label: "SMA 50 Gap", value: metrics.momentum?.sma_50_gap, format: formatPercent },
+    { label: "SMA 200 Gap", value: metrics.momentum?.sma_200_gap, format: formatPercent },
+    { label: "High Dist 1M", value: metrics.momentum?.high_dist_1m, format: formatPercent },
+    { label: "High Dist 1Y", value: metrics.momentum?.high_dist_1y, format: formatPercent },
   ];
 
   // ── Mobile tab state (synced with scroll-snap position) ──
@@ -116,7 +116,7 @@ export default function MetricsGrid() {
       >
         <MetricCard title="Performance" rows={perfRows} />
         <MetricCard title="Volatility" rows={volRows} />
-        <MetricCard title="Volume" rows={volumeRows} />
+        <MetricCard title="Momentum" rows={momentumRows} />
       </div>
     </div>
   );

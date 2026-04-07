@@ -5,7 +5,7 @@ from financial_data_etl.storage.ohlcv_base_store import persist_ohlcv_base
 from financial_data_etl.storage.fundamentals_store import persist_fundamentals_snapshot
 from financial_data_etl.derived_metrics.price_performance.price_performance_runner import run_price_performance_1d
 from financial_data_etl.derived_metrics.volatility.volatility_runner import run_volatility_1d
-from financial_data_etl.derived_metrics.volume.volume_runner import run_volume_1d
+from financial_data_etl.derived_metrics.momentum.momentum_runner import run_momentum_1d
 from financial_data_etl.observability.run_context import RunContext
 
 import argparse
@@ -130,16 +130,16 @@ def main(argv: Optional[List[str]] = None) -> int:
                     with ctx.span("derived_volatility_1d", symbols=len(derived_symbols)):
                         run_volatility_1d(derived_symbols, ctx=ctx)
 
-                def _run_volum():
-                    with ctx.span("derived_volume_1d", symbols=len(derived_symbols)):
-                        run_volume_1d(derived_symbols, ctx=ctx)
+                def _run_momentum():
+                    with ctx.span("derived_momentum_1d", symbols=len(derived_symbols)):
+                        run_momentum_1d(derived_symbols, ctx=ctx)
 
                 # Disparamos los 3 cálculos de Pandas al mismo tiempo usando los hilos de la CPU
                 with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
                     futures = [
                         executor.submit(_run_perf),
                         executor.submit(_run_volat),
-                        executor.submit(_run_volum)
+                        executor.submit(_run_momentum)
                     ]
                     # Esperamos a que terminen y capturamos cualquier error si SQLite se queja
                     for f in concurrent.futures.as_completed(futures):

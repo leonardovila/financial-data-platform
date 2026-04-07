@@ -21,7 +21,11 @@ from financial_data_etl.derived_metrics.volatility.volatility_runner import (
     VOL_WINDOWS,
     ANNUALIZATION_FACTOR,
 )
-from financial_data_etl.derived_metrics.volume.volume_runner import SMA_WINDOWS
+from financial_data_etl.derived_metrics.momentum.momentum_runner import (
+    RSI_PERIOD,
+    SMA_WINDOWS,
+    HIGH_WINDOWS,
+)
 
 
 def _safe(val: float) -> Optional[float]:
@@ -144,67 +148,94 @@ def compute_volatility_live(df: pd.DataFrame) -> Dict[str, Any]:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# VOLUME: volume_usd SMA + gap (deviation from SMA)
+# MOMENTUM: RSI + SMA gaps + Donchian high distances
 #
-# Batch math (volume_runner.py:60-70):
-#   df["volume_usd"] = df["close"] * df["volume"]
-#   for w in SMA_WINDOWS:
-#       sma = grouped_vusd.rolling(window=w, min_periods=w).mean().droplevel(0)
-#       df[f"vol_sma_{w}"] = sma
-#       safe_sma = sma.where(sma != 0)
-#       df[f"vol_gap_{w}"] = df["volume_usd"] / safe_sma - 1.0
+# Batch math (momentum_runner.py): see module-level constants RSI_PERIOD,
+# SMA_WINDOWS, HIGH_WINDOWS imported above. The batch path uses
+# groupby+ewm/rolling; the live path applies the same primitives to a
+# single-symbol DataFrame, so the results converge mathematically when both
+# see the same trailing window of bars.
 #
-# Live equivalent: compute volume_usd once (O(n)), then O(window) mean
-# for each SMA window.
-# rolling(w, min_periods=w).mean().iloc[-1] == volume_usd.iloc[-w:].mean()
-# ONLY when all w values are non-NaN.
+# RSI 14 caveat: ewm is path-dependent. Live and batch must operate on the
+# same trailing 258-bar slice for the result to match within 1e-10. This
+# holds in production because LiveSymbolState keeps exactly that many bars.
 # ──────────────────────────────────────────────────────────────────────────────
 
-def compute_volume_live(df: pd.DataFrame) -> Dict[str, Any]:
+def compute_momentum_live(df: pd.DataFrame) -> Dict[str, Any]:
     """
-    Compute volume metrics for the LAST bar.
+    Compute momentum metrics for the LAST bar.
 
     Args:
-        df: DataFrame with columns 'close', 'volume', sorted by ts ASC.
+        df: DataFrame with columns 'high', 'close', sorted by ts ASC.
 
     Returns:
-        {volume_usd, vol_sma_20, vol_sma_50, vol_sma_100, vol_sma_200,
-         vol_gap_20, vol_gap_50, vol_gap_100, vol_gap_200} — float or None.
+        {rsi_14,
+         sma_20_gap, sma_50_gap, sma_200_gap,
+         high_dist_1m, high_dist_1y} — float or None.
     """
+    keys = ["rsi_14"] + [f"sma_{w}_gap" for w in SMA_WINDOWS] + list(HIGH_WINDOWS.keys())
+
     n = len(df)
     if n == 0:
-        keys = ["volume_usd"]
-        for w in SMA_WINDOWS:
-            keys += [f"vol_sma_{w}", f"vol_gap_{w}"]
         return {k: None for k in keys}
 
-    # ── Volume USD: O(n) once ──
-    volume_usd_series = df["close"] * df["volume"]
-    current_vusd = float(volume_usd_series.iloc[-1])
+    close = df["close"]
+    high = df["high"]
+    last_close = float(close.iloc[-1])
 
-    result: Dict[str, Any] = {"volume_usd": _safe(current_vusd)}
+    result: Dict[str, Any] = {}
 
-    # ── SMA + gap per window: O(window) slice + mean ──
+    # ── RSI 14 (Wilder/EWM, single-symbol slice) ──
+    if n > RSI_PERIOD:
+        delta = close.diff()
+        gain = delta.clip(lower=0)
+        loss = (-delta).clip(lower=0)
+        avg_gain = gain.ewm(alpha=1 / RSI_PERIOD, adjust=False, min_periods=RSI_PERIOD).mean()
+        avg_loss = loss.ewm(alpha=1 / RSI_PERIOD, adjust=False, min_periods=RSI_PERIOD).mean()
+        last_avg_gain = float(avg_gain.iloc[-1])
+        last_avg_loss = float(avg_loss.iloc[-1])
+        if last_avg_gain != last_avg_gain or last_avg_loss != last_avg_loss:
+            # NaN propagation: not enough warmup
+            result["rsi_14"] = None
+        elif last_avg_loss == 0.0:
+            # All gains, no losses → RSI saturates to 100 (matches batch)
+            result["rsi_14"] = 100.0 if last_avg_gain > 0 else None
+        else:
+            rs = last_avg_gain / last_avg_loss
+            result["rsi_14"] = _safe(100 - (100 / (1 + rs)))
+    else:
+        result["rsi_14"] = None
+
+    # ── SMA gaps: O(w) slice + mean ──
     for w in SMA_WINDOWS:
-        sma_col = f"vol_sma_{w}"
-        gap_col = f"vol_gap_{w}"
-
+        col = f"sma_{w}_gap"
         if n >= w:
-            window_slice = volume_usd_series.iloc[-w:]
-            # Match min_periods=w: ALL values must be non-NaN
+            window_slice = close.iloc[-w:]
             if not window_slice.isna().any():
                 sma = float(window_slice.mean())
-                result[sma_col] = _safe(sma)
                 if sma != 0.0:
-                    result[gap_col] = _safe(current_vusd / sma - 1.0)
+                    result[col] = _safe(last_close / sma - 1.0)
                 else:
-                    result[gap_col] = None
+                    result[col] = None
             else:
-                result[sma_col] = None
-                result[gap_col] = None
+                result[col] = None
         else:
-            result[sma_col] = None
-            result[gap_col] = None
+            result[col] = None
+
+    # ── High distance (Donchian): O(w) slice + max ──
+    for col, w in HIGH_WINDOWS.items():
+        if n >= w:
+            window_slice = high.iloc[-w:]
+            if not window_slice.isna().any():
+                max_high = float(window_slice.max())
+                if max_high > 0:
+                    result[col] = _safe(last_close / max_high - 1.0)
+                else:
+                    result[col] = None
+            else:
+                result[col] = None
+        else:
+            result[col] = None
 
     return result
 
@@ -229,11 +260,11 @@ def compute_all_metrics_live(df: pd.DataFrame) -> Dict[str, Any]:
         {
             "performance": {ret_1d, ret_1w, ...},
             "volatility": {range_intraday, vol_1w, ...},
-            "volume": {volume_usd, vol_sma_20, vol_gap_20, ...},
+            "momentum": {rsi_14, sma_20_gap, ..., high_dist_1m, high_dist_1y},
         }
     """
     return {
         "performance": compute_performance_live(df),
         "volatility": compute_volatility_live(df),
-        "volume": compute_volume_live(df),
+        "momentum": compute_momentum_live(df),
     }

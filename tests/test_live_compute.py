@@ -3,7 +3,7 @@ P0_02 Test 2 — Live metrics correctness + sub-millisecond SLA.
 
 Why this test exists:
   `compute_all_metrics_live()` is the core of the live streaming API — it
-  recomputes performance + volatility + volume metrics in-memory on every
+  recomputes performance + volatility + momentum metrics in-memory on every
   WebSocket tick. The README sells this as "zero-I/O submillisecond recompute".
   That SLA *is the product*.
 
@@ -20,7 +20,9 @@ Why this test exists:
   All tests are deterministic — no network, no SQLite, reproducible seed.
 
 Ported from standalone_tests/test_live_compute.py (LIVE-03 verification
-script) to proper pytest format as part of P0_02.
+script) to proper pytest format as part of P0_02. Volume tab was replaced
+by Momentum tab in PL_01b — tests now exercise RSI, SMA gaps, and Donchian
+high-distance metrics.
 """
 
 import time
@@ -30,13 +32,15 @@ import pandas as pd
 
 from financial_data_etl.api.live_compute import (
     ANNUALIZATION_FACTOR,
+    HIGH_WINDOWS,
     LAGS,
+    RSI_PERIOD,
     SMA_WINDOWS,
     VOL_WINDOWS,
     compute_all_metrics_live,
+    compute_momentum_live,
     compute_performance_live,
     compute_volatility_live,
-    compute_volume_live,
 )
 
 
@@ -156,50 +160,100 @@ def test_volatility_insufficient_data():
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# VOLUME TESTS
+# MOMENTUM TESTS (replaces former Volume tests — see PL_01b)
 # ══════════════════════════════════════════════════════════════════════════════
 
-def test_volume_basic():
-    """compute_volume_live returns volume_usd + all SMA + all gap fields."""
+def test_momentum_basic():
+    """compute_momentum_live returns RSI + 3 SMA gaps + 2 high distances."""
     df = _make_df(258)
-    result = compute_volume_live(df)
+    result = compute_momentum_live(df)
 
-    assert result["volume_usd"] is not None
+    assert result["rsi_14"] is not None
     for w in SMA_WINDOWS:
-        assert f"vol_sma_{w}" in result
-        assert f"vol_gap_{w}" in result
-        assert result[f"vol_sma_{w}"] is not None
+        assert f"sma_{w}_gap" in result
+        assert result[f"sma_{w}_gap"] is not None
+    for col in HIGH_WINDOWS:
+        assert col in result
+        assert result[col] is not None
 
 
-def test_volume_math_matches_batch():
-    """Live volume SMAs and gaps must match the batch runner's rolling mean."""
+def test_momentum_rsi_range():
+    """RSI must be bounded in [0, 100] on a realistic random walk."""
     df = _make_df(258)
-    volume_usd = df["close"] * df["volume"]
+    result = compute_momentum_live(df)
+    rsi = result["rsi_14"]
+    assert rsi is not None
+    assert 0.0 <= rsi <= 100.0, f"RSI out of bounds: {rsi}"
 
-    live_result = compute_volume_live(df)
 
-    assert abs(float(volume_usd.iloc[-1]) - live_result["volume_usd"]) < 1e-6
+def test_momentum_sma_gap_math_matches_batch():
+    """Live SMA gaps must match a from-scratch rolling mean to 1e-12."""
+    df = _make_df(258)
+    close = df["close"]
+    last_close = float(close.iloc[-1])
+
+    live_result = compute_momentum_live(df)
 
     for w in SMA_WINDOWS:
-        batch_sma = float(volume_usd.rolling(window=w, min_periods=w).mean().iloc[-1])
-        live_sma = live_result[f"vol_sma_{w}"]
-        assert abs(batch_sma - live_sma) < 1e-6, (
-            f"vol_sma_{w}: batch={batch_sma} vs live={live_sma}"
+        batch_sma = float(close.rolling(window=w, min_periods=w).mean().iloc[-1])
+        batch_gap = last_close / batch_sma - 1.0
+        live_gap = live_result[f"sma_{w}_gap"]
+        assert abs(batch_gap - live_gap) < 1e-12, (
+            f"sma_{w}_gap: batch={batch_gap} vs live={live_gap}"
         )
 
-        batch_gap = float(volume_usd.iloc[-1] / batch_sma - 1.0)
-        live_gap = live_result[f"vol_gap_{w}"]
-        assert abs(batch_gap - live_gap) < 1e-10
+
+def test_momentum_high_distance_math_matches_batch():
+    """Live Donchian high distances must match a from-scratch rolling max."""
+    df = _make_df(258)
+    high = df["high"]
+    last_close = float(df["close"].iloc[-1])
+
+    live_result = compute_momentum_live(df)
+
+    for col, w in HIGH_WINDOWS.items():
+        batch_max = float(high.rolling(window=w, min_periods=w).max().iloc[-1])
+        batch_dist = last_close / batch_max - 1.0
+        live_dist = live_result[col]
+        assert abs(batch_dist - live_dist) < 1e-12, (
+            f"{col}: batch={batch_dist} vs live={live_dist}"
+        )
 
 
-def test_volume_insufficient_data():
-    """Short DataFrame gracefully degrades long-window SMAs to None."""
+def test_momentum_rsi_math_matches_wilder_ewm():
+    """Live RSI must match a from-scratch Wilder/EWM computation to 1e-10."""
+    df = _make_df(258)
+    close = df["close"]
+
+    delta = close.diff()
+    gain = delta.clip(lower=0)
+    loss = (-delta).clip(lower=0)
+    avg_gain = gain.ewm(alpha=1 / RSI_PERIOD, adjust=False, min_periods=RSI_PERIOD).mean()
+    avg_loss = loss.ewm(alpha=1 / RSI_PERIOD, adjust=False, min_periods=RSI_PERIOD).mean()
+    last_avg_gain = float(avg_gain.iloc[-1])
+    last_avg_loss = float(avg_loss.iloc[-1])
+    rs = last_avg_gain / last_avg_loss
+    batch_rsi = 100 - (100 / (1 + rs))
+
+    live_rsi = compute_momentum_live(df)["rsi_14"]
+    assert abs(batch_rsi - live_rsi) < 1e-10, (
+        f"rsi_14: batch={batch_rsi} vs live={live_rsi}"
+    )
+
+
+def test_momentum_insufficient_data():
+    """Short DataFrame gracefully degrades long-window momentum metrics to None."""
     df = _make_df(10)
-    result = compute_volume_live(df)
+    result = compute_momentum_live(df)
 
-    assert result["volume_usd"] is not None
-    assert result["vol_sma_200"] is None
-    assert result["vol_gap_200"] is None
+    # 10 bars: short SMA/high windows survive (20 doesn't), long ones don't
+    assert result["sma_200_gap"] is None
+    assert result["sma_50_gap"] is None
+    assert result["sma_20_gap"] is None  # window=20 needs 20 bars, we have 10
+    assert result["high_dist_1y"] is None
+    assert result["high_dist_1m"] is None
+    # RSI 14 needs >14 bars; with 10 we don't have enough warmup
+    assert result["rsi_14"] is None
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -213,10 +267,10 @@ def test_compute_all_structure_is_json_safe():
 
     assert "performance" in result
     assert "volatility" in result
-    assert "volume" in result
+    assert "momentum" in result
     assert len(result["performance"]) == 6
     assert len(result["volatility"]) == 6
-    assert len(result["volume"]) == 9
+    assert len(result["momentum"]) == 6  # rsi_14 + 3 sma gaps + 2 high distances
 
     for section_name, section in result.items():
         for key, val in section.items():
@@ -236,13 +290,13 @@ def test_empty_df_returns_all_none_without_crashing():
 
 
 def test_single_row_graceful_degradation():
-    """Single-row DataFrame: volume_usd present, performance/volatility windows None."""
+    """Single-row DataFrame: all windows None, no crash."""
     df = _make_df(1)
     result = compute_all_metrics_live(df)
 
     assert all(v is None for v in result["performance"].values())
     assert result["volatility"]["range_intraday"] is None
-    assert result["volume"]["volume_usd"] is not None
+    assert all(v is None for v in result["momentum"].values())
 
 
 # ══════════════════════════════════════════════════════════════════════════════

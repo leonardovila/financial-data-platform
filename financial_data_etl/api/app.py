@@ -3,7 +3,7 @@ financial-data-etl API: REST endpoints + Seed & Edge live WebSocket.
 
 REST endpoints (unchanged from batch ETL era):
   GET /symbols, /ohlcv/history/{symbol}, /fundamentals/{symbol},
-      /performance/1d/{symbol}, /volatility/1d/{symbol}, /volume/1d/{symbol}
+      /performance/1d/{symbol}, /volatility/1d/{symbol}, /momentum/1d/{symbol}
 
 Live WebSocket (LIVE-06):
   WS /ws/live/{symbol} — Seed & Edge event-driven streaming
@@ -80,7 +80,7 @@ def _ensure_schema():
     from financial_data_etl.storage.fundamentals_store import _ensure_table_exists
     from financial_data_etl.derived_metrics.price_performance.price_performance_store import init_performance_schema
     from financial_data_etl.derived_metrics.volatility.volatility_store import init_volatility_schema
-    from financial_data_etl.derived_metrics.volume.volume_store import init_volume_schema
+    from financial_data_etl.derived_metrics.momentum.momentum_store import init_momentum_schema
     from financial_data_etl.universe.storage.universe_store import init_universe_schema
 
     init_tv_candles_schema()
@@ -89,7 +89,7 @@ def _ensure_schema():
         _ensure_table_exists(conn)
     init_performance_schema()
     init_volatility_schema()
-    init_volume_schema()
+    init_momentum_schema()
     init_universe_schema()
     logger.info("API startup: database schema verified")
 
@@ -261,14 +261,14 @@ def get_latest_volatility_1d(symbol: str):
         conn.close()
 
 
-@app.get("/volume/1d/{symbol}")
-def get_latest_volume_1d(symbol: str):
+@app.get("/momentum/1d/{symbol}")
+def get_latest_momentum_1d(symbol: str):
     conn = get_connection()
     try:
         row = fetchone_dict(conn, f"""
-            SELECT symbol, ts, volume_usd, vol_sma_20, vol_sma_50, vol_sma_100, vol_sma_200,
-                   vol_gap_20, vol_gap_50, vol_gap_100, vol_gap_200
-            FROM volume_1d
+            SELECT symbol, ts, rsi_14, sma_20_gap, sma_50_gap, sma_200_gap,
+                   high_dist_1m, high_dist_1y
+            FROM momentum_1d
             WHERE symbol = {PH} AND is_partial = 0
             ORDER BY ts DESC LIMIT 1
         """, (symbol.upper(),))
