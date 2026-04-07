@@ -9,7 +9,7 @@
 
 import { useState, useRef, useEffect, useCallback } from "react";
 import { useWsStore } from "../stores/wsStore";
-import { formatCurrency, signClass } from "../lib/formatters";
+import { formatCurrency } from "../lib/formatters";
 
 const API_BASE =
   import.meta.env.VITE_API_URL ?? `${window.location.origin}`;
@@ -51,12 +51,6 @@ export default function SymbolSearch() {
 
   // ── Derived: live price ──
   const livePrice = latestTick?.candle.close ?? null;
-  const prevPrice =
-    latestTick && seedData?.chart_candles?.length
-      ? seedData.chart_candles[seedData.chart_candles.length - 1]?.[4] ?? null
-      : null;
-  const priceDelta =
-    livePrice !== null && prevPrice !== null ? livePrice - prevPrice : null;
 
   // ── Derived: display text for idle state ──
   // During switch (seedData=null): show pendingSymbolDisplay
