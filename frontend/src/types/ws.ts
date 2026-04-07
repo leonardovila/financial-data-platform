@@ -38,22 +38,19 @@ export interface VolatilityMetrics {
   vol_1y: number | null;
 }
 
-export interface VolumeMetrics {
-  volume_usd: number | null;
-  vol_sma_20: number | null;
-  vol_sma_50: number | null;
-  vol_sma_100: number | null;
-  vol_sma_200: number | null;
-  vol_gap_20: number | null;
-  vol_gap_50: number | null;
-  vol_gap_100: number | null;
-  vol_gap_200: number | null;
+export interface MomentumMetrics {
+  rsi_14: number | null;
+  sma_20_gap: number | null;
+  sma_50_gap: number | null;
+  sma_200_gap: number | null;
+  high_dist_1m: number | null;
+  high_dist_1y: number | null;
 }
 
 export interface AllMetrics {
   performance: PerformanceMetrics | null;
   volatility: VolatilityMetrics | null;
-  volume: VolumeMetrics | null;
+  momentum: MomentumMetrics | null;
 }
 
 // ── Fundamentals ──

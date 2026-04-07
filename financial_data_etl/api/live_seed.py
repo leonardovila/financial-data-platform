@@ -33,8 +33,8 @@ _NUMERIC_FIELDS = {
     "market_cap", "pe_ttm", "eps_ttm", "shares_outstanding",
     "ret_1d", "ret_1w", "ret_1m", "ret_3m", "ret_6m", "ret_1y",
     "range_intraday", "vol_1w", "vol_1m", "vol_3m", "vol_6m", "vol_1y",
-    "volume_usd", "vol_sma_20", "vol_sma_50", "vol_sma_100", "vol_sma_200",
-    "vol_gap_20", "vol_gap_50", "vol_gap_100", "vol_gap_200",
+    "rsi_14", "sma_20_gap", "sma_50_gap", "sma_200_gap",
+    "high_dist_1m", "high_dist_1y",
 }
 
 
@@ -66,7 +66,7 @@ def load_historical_seed(symbol: str) -> Dict[str, Any]:
             "metrics": {
                 "performance": {...} | None,
                 "volatility": {...} | None,
-                "volume": {...} | None,
+                "momentum": {...} | None,
             },
         }
     """
@@ -132,17 +132,17 @@ def load_historical_seed(symbol: str) -> Dict[str, Any]:
 
         volatility: Optional[Dict[str, Any]] = _row_to_dict(vol_row) if vol_row else None
 
-        # ── Q5: Volume (latest non-partial) ──
-        volume_row = fetchone_dict(conn, f"""
-            SELECT symbol, ts, volume_usd, vol_sma_20, vol_sma_50, vol_sma_100, vol_sma_200,
-                   vol_gap_20, vol_gap_50, vol_gap_100, vol_gap_200
-            FROM volume_1d
+        # ── Q5: Momentum (latest non-partial) ──
+        momentum_row = fetchone_dict(conn, f"""
+            SELECT symbol, ts, rsi_14, sma_20_gap, sma_50_gap, sma_200_gap,
+                   high_dist_1m, high_dist_1y
+            FROM momentum_1d
             WHERE symbol = {PH} AND is_partial = 0
             ORDER BY ts DESC
             LIMIT 1
         """, (sym,))
 
-        volume: Optional[Dict[str, Any]] = _row_to_dict(volume_row) if volume_row else None
+        momentum: Optional[Dict[str, Any]] = _row_to_dict(momentum_row) if momentum_row else None
 
     finally:
         conn.close()
@@ -155,6 +155,6 @@ def load_historical_seed(symbol: str) -> Dict[str, Any]:
         "metrics": {
             "performance": performance,
             "volatility": volatility,
-            "volume": volume,
+            "momentum": momentum,
         },
     }
