@@ -2,7 +2,7 @@
 // FRONT-006: MetricsGrid — Performance / Volatility / Volume
 //
 // Desktop (sm+): CSS grid-cols-3, all three cards visible simultaneously.
-// Mobile (<sm):  Scroll-snap tabs. Tab bar at top (PERF | VOL | RISK).
+// Mobile (<sm):  Scroll-snap tabs. Tab bar at top (PERFORMANCE | VOLATILITY | VOLUME).
 //                One card visible at a time. Native iOS momentum swipe.
 // ──────────────────────────────────────────────────────────────────────────────
 
@@ -11,7 +11,7 @@ import { useWsStore } from "../stores/wsStore";
 import MetricCard from "./MetricCard";
 import { formatPercent, formatLargeNumber } from "../lib/formatters";
 
-const TABS = ["PERF", "VOLATILITY", "VOLUME"] as const;
+const TABS = ["PERFORMANCE", "VOLATILITY", "VOLUME"] as const;
 
 export default function MetricsGrid() {
   const metrics = useWsStore((s) => s.metrics);
@@ -19,30 +19,30 @@ export default function MetricsGrid() {
   // ── Build row configs from live metrics ──
 
   const perfRows = [
-    { label: "Ret 1D", value: metrics.performance?.ret_1d, format: formatPercent },
-    { label: "Ret 1W", value: metrics.performance?.ret_1w, format: formatPercent },
-    { label: "Ret 1M", value: metrics.performance?.ret_1m, format: formatPercent },
-    { label: "Ret 3M", value: metrics.performance?.ret_3m, format: formatPercent },
-    { label: "Ret 6M", value: metrics.performance?.ret_6m, format: formatPercent },
-    { label: "Ret 1Y", value: metrics.performance?.ret_1y, format: formatPercent },
+    { label: "Price Change 1D", value: metrics.performance?.ret_1d, format: formatPercent },
+    { label: "Price Change 1W", value: metrics.performance?.ret_1w, format: formatPercent },
+    { label: "Price Change 1M", value: metrics.performance?.ret_1m, format: formatPercent },
+    { label: "Price Change 3M", value: metrics.performance?.ret_3m, format: formatPercent },
+    { label: "Price Change 6M", value: metrics.performance?.ret_6m, format: formatPercent },
+    { label: "Price Change 1Y", value: metrics.performance?.ret_1y, format: formatPercent },
   ];
 
   const volRows = [
     { label: "Range", value: metrics.volatility?.range_intraday, format: formatPercent, colored: false },
-    { label: "Vol 1W", value: metrics.volatility?.vol_1w, format: formatPercent, colored: false },
-    { label: "Vol 1M", value: metrics.volatility?.vol_1m, format: formatPercent, colored: false },
-    { label: "Vol 3M", value: metrics.volatility?.vol_3m, format: formatPercent, colored: false },
-    { label: "Vol 6M", value: metrics.volatility?.vol_6m, format: formatPercent, colored: false },
-    { label: "Vol 1Y", value: metrics.volatility?.vol_1y, format: formatPercent, colored: false },
+    { label: "Volatility 1W", value: metrics.volatility?.vol_1w, format: formatPercent, colored: false },
+    { label: "Volatility 1M", value: metrics.volatility?.vol_1m, format: formatPercent, colored: false },
+    { label: "Volatility 3M", value: metrics.volatility?.vol_3m, format: formatPercent, colored: false },
+    { label: "Volatility 6M", value: metrics.volatility?.vol_6m, format: formatPercent, colored: false },
+    { label: "Volatility 1Y", value: metrics.volatility?.vol_1y, format: formatPercent, colored: false },
   ];
 
   const volumeRows = [
-    { label: "Vol USD", value: metrics.volume?.volume_usd, format: formatLargeNumber, colored: false },
-    { label: "SMA 20", value: metrics.volume?.vol_sma_20, format: formatLargeNumber, colored: false },
-    { label: "SMA 50", value: metrics.volume?.vol_sma_50, format: formatLargeNumber, colored: false },
-    { label: "Gap 20", value: metrics.volume?.vol_gap_20, format: formatPercent },
-    { label: "Gap 50", value: metrics.volume?.vol_gap_50, format: formatPercent },
-    { label: "Gap 200", value: metrics.volume?.vol_gap_200, format: formatPercent },
+    { label: "Volume USD", value: metrics.volume?.volume_usd, format: formatLargeNumber, colored: false },
+    { label: "Volume SMA 20", value: metrics.volume?.vol_sma_20, format: formatLargeNumber, colored: false },
+    { label: "Volume SMA 50", value: metrics.volume?.vol_sma_50, format: formatLargeNumber, colored: false },
+    { label: "Volume Gap 20", value: metrics.volume?.vol_gap_20, format: formatPercent },
+    { label: "Volume Gap 50", value: metrics.volume?.vol_gap_50, format: formatPercent },
+    { label: "Volume Gap 200", value: metrics.volume?.vol_gap_200, format: formatPercent },
   ];
 
   // ── Mobile tab state (synced with scroll-snap position) ──

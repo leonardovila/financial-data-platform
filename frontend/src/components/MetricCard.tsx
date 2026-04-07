@@ -26,7 +26,7 @@ const MetricCard = memo(function MetricCard({ title, rows }: MetricCardProps) {
   return (
     <div className="bg-[var(--color-panel)] border border-[var(--color-border)] min-w-full snap-start sm:min-w-0">
       {/* Title */}
-      <div className="px-3 py-2 text-[11px] sm:text-xs uppercase tracking-widest text-[var(--color-text)] border-b border-[var(--color-border)] font-semibold">
+      <div className="px-3 py-2 text-xs sm:text-sm uppercase tracking-widest text-[var(--color-text)] border-b border-[var(--color-border)] font-bold">
         {title}
       </div>
 

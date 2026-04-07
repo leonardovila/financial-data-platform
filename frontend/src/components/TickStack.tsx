@@ -60,10 +60,13 @@ const TickRow = memo(function TickRow({ tick, prevClose, isFirst }: TickRowProps
 
 // ── Tick list renderer (shared between desktop sidebar and mobile sheet) ──
 
-function TickList() {
+function TickList({ maxRows = 20 }: { maxRows?: number } = {}) {
   const tickHistory = useWsStore((s) => s.tickHistory);
 
-  if (tickHistory.length === 0) {
+  // Hachazo directo. Nada de scroll, nada de renderizar 50 filas invisibles.
+  const displayTicks = tickHistory.slice(0, maxRows);
+
+  if (displayTicks.length === 0) {
     return (
       <div className="flex items-center justify-center h-full text-xs text-[var(--color-muted)]">
         Waiting for ticks...
@@ -72,8 +75,9 @@ function TickList() {
   }
 
   return (
-    <div className="overflow-hidden will-change-transform">
-      {tickHistory.map((tick, i) => (
+    // Agregamos el border-b acá para la raya final que pediste
+    <div className="overflow-hidden will-change-transform border-b border-[var(--color-border)]">
+      {displayTicks.map((tick, i) => (
         <TickRow
           key={tick.ts + "-" + tick.candle.ts}
           tick={tick}
@@ -102,16 +106,19 @@ function TickHeader() {
 }
 
 // ── Desktop sidebar (sm+ — always visible, rendered by Dashboard grid) ──
-
 export function TickStackSidebar() {
   return (
     <div className="flex flex-col h-full bg-[var(--color-bg)] border-l border-[var(--color-border)]">
-      <div className="px-2 py-1 text-[10px] uppercase tracking-widest text-[var(--color-muted)] border-b border-[var(--color-border)]">
-        Live Price Feed
+      {/* Header agresivo en neón con pulso para gritar LIVE en desktop */}
+      <div className="px-2 py-1 text-[10px] text-[var(--color-neon)] font-bold uppercase tracking-widest border-b border-[var(--color-border)] flex items-center gap-2 bg-[var(--color-panel)]">
+        <span className="inline-block w-1.5 h-1.5 rounded-full bg-[var(--color-neon)] pulse" />
+        LIVE PRICE FEED
       </div>
       <TickHeader />
-      <div className="flex-1 min-h-0 overflow-hidden">
-        <TickList />
+      
+      {/* Contenedor estático, sin flex-1 para que no se estire al pedo */}
+      <div className="bg-[var(--color-bg)]">
+        <TickList maxRows={20} />
       </div>
     </div>
   );
@@ -119,64 +126,43 @@ export function TickStackSidebar() {
 
 // ── Mobile bottom-sheet (< sm — toggle via pill button) ──
 
+// ── Mobile embedded feed (< sm) ──
+// Ocupa espacio real en el DOM, robándole altura al Chart.
+
 export function TickStackMobile() {
-  const [open, setOpen] = useState(false);
-  const tickCount = useWsStore((s) => s.tickHistory.length);
+  const tickHistory = useWsStore((s) => s.tickHistory);
+  
+  // Cortamos a 4 ticks máximo. Densidad total.
+  const displayTicks = tickHistory.slice(0, 4);
 
   return (
-    <>
-      {/* Feed pill — pinned inside Nginx navbar, top-right on mobile */}
-      <button
-        onClick={() => setOpen((v) => !v)}
-        className={[
-          "fixed top-[7px] right-3 sm:hidden",
-          "flex items-center gap-1.5 px-2.5 py-1",
-          "text-[10px] uppercase tracking-widest font-mono rounded",
-          "border transition-colors duration-150",
-          open
-            ? "bg-[var(--color-neon)] text-[var(--color-bg)] border-[var(--color-neon)]"
-            : "bg-[var(--color-panel)] text-[var(--color-muted)] border-[var(--color-border)]",
-        ].join(" ")}
-        style={{ zIndex: 100000 }}
-        aria-label={open ? "Close live feed" : "Open live feed"}
-      >
-        <span
-          className={`inline-block w-1.5 h-1.5 rounded-full ${
-            tickCount > 0 ? "bg-[var(--color-neon)] pulse" : "bg-[var(--color-muted)]"
-          }`}
-        />
-        Feed
-      </button>
-
-      {/* Bottom sheet overlay */}
-      <div
-        className={[
-          "fixed inset-x-0 bottom-0 z-40 sm:hidden",
-          "bg-[var(--color-bg)] border-t border-[var(--color-border)]",
-          "transition-transform duration-200 ease-out",
-          open ? "translate-y-0" : "translate-y-full",
-        ].join(" ")}
-        style={{ height: "50dvh" }}
-      >
-        {/* Drag handle */}
-        <div className="flex justify-center py-2">
-          <div className="w-10 h-1 rounded-full bg-[var(--color-border)]" />
-        </div>
-
-        <TickHeader />
-
-        <div className="flex-1 overflow-hidden" style={{ height: "calc(50dvh - 52px)" }}>
-          <TickList />
-        </div>
+    <div className="sm:hidden flex flex-col shrink-0 w-full bg-[var(--color-bg)] border-t border-[var(--color-border)]">
+      {/* Indicador de estado LIVE */}
+      <div className="px-2 py-1 text-[9px] text-[var(--color-neon)] font-bold uppercase tracking-widest border-b border-[var(--color-border)] flex items-center gap-2 bg-[var(--color-panel)]">
+        <span className="inline-block w-1.5 h-1.5 rounded-full bg-[var(--color-neon)] pulse" />
+        LIVE PRICE FEED
       </div>
-
-      {/* Backdrop */}
-      {open && (
-        <div
-          className="fixed inset-0 z-30 bg-black/40 sm:hidden"
-          onClick={() => setOpen(false)}
-        />
-      )}
-    </>
+      
+      <TickHeader />
+      
+      <div className="flex flex-col overflow-hidden">
+        {displayTicks.length === 0 ? (
+          <div className="flex items-center justify-center h-12 text-xs text-[var(--color-muted)]">
+            Waiting for ticks...
+          </div>
+        ) : (
+          displayTicks.map((tick, i) => (
+            <TickRow
+              key={tick.ts + "-" + tick.candle.ts}
+              tick={tick}
+              prevClose={
+                i + 1 < tickHistory.length ? tickHistory[i + 1].candle.close : null
+              }
+              isFirst={i === 0}
+            />
+          ))
+        )}
+      </div>
+    </div>
   );
 }

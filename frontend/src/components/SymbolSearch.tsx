@@ -203,20 +203,12 @@ export default function SymbolSearch() {
               )}
             </div>
 
-            {/* Live price + delta */}
+            {/* Live price (limpio, sin deltas fantasma) */}
             {livePrice !== null && (
               <div className="flex items-center gap-2 shrink-0">
                 <span className="font-mono text-sm text-[var(--color-text)] tabular-nums">
                   {formatCurrency(livePrice)}
                 </span>
-                {priceDelta !== null && (
-                  <span
-                    className={`font-mono text-xs tabular-nums ${signClass(priceDelta)}`}
-                  >
-                    {priceDelta >= 0 ? "+" : ""}
-                    {priceDelta.toFixed(2)}
-                  </span>
-                )}
               </div>
             )}
           </>
