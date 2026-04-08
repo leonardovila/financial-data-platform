@@ -20,15 +20,15 @@ export const PERFORMANCE_GLOSSARY = {
   ret_1d:
     "Price change over the last 1 day — how much the stock moved today compared to yesterday's close.",
   ret_1w:
-    "Price change over the last 1 week (5 trading days). How much the stock moved over the past few days.",
+    "Price change over the last week (5 trading days). How much the stock moved over the past few days.",
   ret_1m:
-    "Price change over the last 1 month (about 21 trading days). A common short-term gauge.",
+    "Price change over the last month (about 21 trading days). A common short-term gauge.",
   ret_3m:
     "Price change over the last 3 months. A standard benchmark for short-term momentum.",
   ret_6m:
     "Price change over the last 6 months. Smooths out short-term noise.",
   ret_1y:
-    "Price change over the last 1 year (about 252 trading days). The textbook yardstick for long-term performance.",
+    "Price change over the last year (about 252 trading days). The textbook yardstick for long-term performance.",
 } as const;
 
 export const VOLATILITY_GLOSSARY = {
@@ -37,37 +37,37 @@ export const VOLATILITY_GLOSSARY = {
   range_intraday:
     "How wide today's price range is. Calculated as today's high minus today's low, divided by today's close. A busy, choppy day produces a wider range.",
   vol_1w:
-    "Volatility over the last 1 week. Roughly: how much the daily price has been bouncing around recently. A higher number = more daily movement.",
+    "Volatility over the last week. Roughly: how much the daily price has been bouncing around recently. A higher number = more daily movement.",
   vol_1m:
-    "Volatility over the last 1 month. A short-term view of how 'wild' the stock has been.",
+    "Volatility over the last month. A short-term view of how 'wild' the stock has been.",
   vol_3m:
     "Volatility over the last 3 months. A medium-term view of price swings.",
   vol_6m:
     "Volatility over the last 6 months. Smoother — short spikes get averaged out.",
   vol_1y:
-    "Volatility over the last 1 year. The textbook standard for measuring how risky a stock is.",
+    "Volatility over the last year. The textbook standard for measuring how risky a stock is.",
 } as const;
 
 export const MOMENTUM_GLOSSARY = {
   category:
     "Evaluates the speed and strength of price trends to spot continuations or reversals. Uses moving averages and oscillators to identify overbought/oversold conditions and time market entries.",
   rsi_14:
-    "RSI = Relative Strength Index. A score from 0 to 100 that summarizes recent momentum, based on the last 14 days. Above 70 = the stock has been rallying hard (might pull back). Below 30 = it has been falling hard (might bounce). The most popular momentum indicator in technical analysis.",
+    "RSI = Relative Strength Index. A score from 0 to 100 that summarizes recent momentum, based on the last 14 trading-sessions. Above 70 = the stock has been rallying hard (might pull back). Below 30 = it has been falling hard (might bounce). The most popular momentum indicator in technical analysis.",
   sma_20_gap:
-    "How far the current price is above or below its average over the last 20 days. Positive = above the average; negative = below. A short-term trend signal.",
+    "How far the current price is above or below its average over the last 20 trading-sessions. Positive = above the average; negative = below. A short-term trend signal.",
   sma_50_gap:
-    "How far the current price is above or below its average over the last 50 days. A mid-term trend signal — traders often watch this level as support or resistance.",
+    "How far the current price is above or below its average over the last 50 trading-sessions. A mid-term trend signal — traders often watch this level as support or resistance.",
   sma_200_gap:
-    "How far the current price is above or below its average over the last 200 days. THE long-term trend line. Above zero is generally considered bull market territory; below zero, bear market territory.",
+    "How far the current price is above or below its average over the last 200 trading-sessions. THE long-term trend line. Above zero is generally considered bull market territory; below zero, bear market territory.",
   high_dist_1m:
     "How far the current price is below its highest point of the last month. 0% means the price is right at the monthly peak; -5% means it is 5% below it.",
   high_dist_1y:
-    "How far the current price is below its 52-week high (highest price of the last year). 0% means a brand-new yearly high. The classic 'how close are we to the top?' metric.",
+    "How far the current price is below its highest point of the last year (52-week). 0% means a brand-new yearly high. The classic 'how close are we to the top?' metric.",
 } as const;
 
 export const LIVE_FEED_GLOSSARY = {
   description:
-    "Real-time stream of price ticks coming directly from the exchange. Each row shows the timestamp, the trade price, and the change versus the previous tick (green = up, red = down). New ticks slide in at the top of the list. The pulsing green dot means the WebSocket connection is live and data is flowing.",
+    "Real-time market transactions. Each row is an actual trade happening right now. If you see no activity, remember that traditional stock markets close at night and on weekends. To see the engine running at full speed right now, search for BTC (Bitcoin), which trades 24/7.",
 } as const;
 
 export const FUNDAMENTALS_GLOSSARY = {

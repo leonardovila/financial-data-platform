@@ -46,8 +46,8 @@ export default function MetricsGrid() {
     { label: "SMA 20 Gap", value: metrics.momentum?.sma_20_gap, format: formatPercent, help: MOMENTUM_GLOSSARY.sma_20_gap },
     { label: "SMA 50 Gap", value: metrics.momentum?.sma_50_gap, format: formatPercent, help: MOMENTUM_GLOSSARY.sma_50_gap },
     { label: "SMA 200 Gap", value: metrics.momentum?.sma_200_gap, format: formatPercent, help: MOMENTUM_GLOSSARY.sma_200_gap },
-    { label: "High Dist 1M", value: metrics.momentum?.high_dist_1m, format: formatPercent, help: MOMENTUM_GLOSSARY.high_dist_1m },
-    { label: "High Dist 1Y", value: metrics.momentum?.high_dist_1y, format: formatPercent, help: MOMENTUM_GLOSSARY.high_dist_1y },
+    { label: "Off 1M High", value: metrics.momentum?.high_dist_1m, format: formatPercent, help: MOMENTUM_GLOSSARY.high_dist_1m },
+    { label: "Off 52W High", value: metrics.momentum?.high_dist_1y, format: formatPercent, help: MOMENTUM_GLOSSARY.high_dist_1y },
   ];
 
   // ── Mobile tab state (synced with scroll-snap position) ──
