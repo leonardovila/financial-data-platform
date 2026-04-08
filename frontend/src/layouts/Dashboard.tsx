@@ -27,7 +27,7 @@ export default function Dashboard() {
         href="/"
         className={[
           "shrink-0 flex items-center gap-1.5",
-          "h-9 px-4 sm:px-3",
+          "h-9 px-4 lg:px-3",
           "bg-[var(--color-bg)] border-b border-[var(--color-border)]",
           "font-mono text-xs font-semibold",
           "text-[var(--color-blue)] hover:text-[var(--color-text)]",
@@ -44,28 +44,28 @@ export default function Dashboard() {
 
           "grid grid-cols-1 gap-1",
 
-          // ── MOBILE: 6 filas. header(48) fundamentals(auto) chart(1fr) ticks(auto) metrics(auto) status(28) ──
+          // ── MOBILE & TABLET (<1024px): 6 filas. ──
           "grid-rows-[48px_auto_1fr_auto_auto_28px]",
 
-          // ── TABLET (≥640px) ──
-          "sm:grid-cols-[78fr_22fr]",
-          "sm:grid-rows-[auto_auto_1fr_auto_auto]",
+          // ── DESKTOP (≥1024px) ──
+          "lg:grid-cols-[78fr_22fr]",
+          "lg:grid-rows-[auto_auto_1fr_auto_auto]",
 
-          // ── DESKTOP (≥1280px) ──
+          // ── MONITORES GRANDES (≥1280px) ──
           "xl:grid-cols-[82fr_18fr]",
         ].join(" ")}
       >
         {/* ── ROW 1: Header ── */}
-        <div className="sm:col-span-2 min-w-0">
+        <div className="lg:col-span-2 min-w-0">
           <SymbolSearch />
         </div>
 
-        {/* ── ROW 2: FundamentalsBar (Ahora visible en mobile y desktop) ── */}
-        <div className="sm:col-span-2 min-w-0">
+        {/* ── ROW 2: FundamentalsBar ── */}
+        <div className="lg:col-span-2 min-w-0">
           <FundamentalsBar />
         </div>
 
-        {/* ── ROW 2 mobile / ROW 3 tablet+: Chart ── */}
+        {/* ── ROW 3: Chart ── */}
         <div className="min-h-0 min-w-0 relative">
           {!seedData && (
             <div className="absolute inset-0 flex items-center justify-center z-10">
@@ -75,23 +75,24 @@ export default function Dashboard() {
           <Chart />
         </div>
 
-        {/* ── TickStack sidebar (tablet+ only) ── */}
-        <div className="hidden sm:block min-h-0 min-w-0">
+        {/* ── TickStack sidebar (desktop only) ── */}
+        <div className="hidden lg:block min-h-0 min-w-0">
           <TickStackSidebar />
         </div>
 
-        {/* ── ROW 3 mobile / Hidden on tablet+: TickStackMobile ── */}
-        {/* Al estar en el flujo del grid, ocupa su 'auto' y el chart se achica gracias al 1fr */}
-        <TickStackMobile />
+        {/* ── ROW 4 mobile / Hidden on desktop: TickStackMobile ── */}
+        <div className="lg:hidden min-w-0">
+          <TickStackMobile />
+        </div>
 
-        {/* ── ROW 4 mobile / ROW 4 tablet+: MetricsGrid ── */}
-        <div className="sm:col-span-2 min-w-0 overflow-hidden">
+        {/* ── ROW 5: MetricsGrid ── */}
+        <div className="lg:col-span-2 min-w-0 overflow-hidden">
           <MetricsGrid />
         </div>
 
-        {/* ── ROW 5 mobile / ROW 5 tablet+: StatusBar ── */}
+        {/* ── ROW 6: StatusBar ── */}
         <div
-          className="sm:col-span-2"
+          className="lg:col-span-2"
           style={{ paddingBottom: "env(safe-area-inset-bottom)" }}
         >
           <StatusBar />
