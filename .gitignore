@@ -8,6 +8,7 @@ __pycache__/
 *.pyd
 *claude.md
 *transition_bible.json
+*vps_info.md
 
 # Build / packaging artifacts
 financial_data_etl.egg-info/
