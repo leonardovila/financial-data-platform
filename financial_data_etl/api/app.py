@@ -51,10 +51,17 @@ MAX_CONSECUTIVE_HEARTBEATS = 5  # 5 × 45s = 225s of no TV data → assume dead
 # ──────────────────────────────────────────────────────────────────────────────
 _DEBUG = os.environ.get("DEBUG", "").lower() in ("1", "true", "yes")
 
-# ALLOWED_ORIGINS: comma-separated whitelist. Defaults to dev-friendly list.
+# ALLOWED_ORIGINS: comma-separated whitelist. Defaults cover both dev and the
+# current production domain (leonardovila.com). Override via env var in any
+# other deployment (staging, AWS, etc.) so we never rely on code defaults in
+# non-default environments.
 _ALLOWED_ORIGINS_RAW = os.environ.get(
     "ALLOWED_ORIGINS",
-    "http://localhost:3000,http://localhost:5173,http://127.0.0.1:3000,http://127.0.0.1:5173",
+    (
+        "http://localhost:3000,http://localhost:5173,"
+        "http://127.0.0.1:3000,http://127.0.0.1:5173,"
+        "https://leonardovila.com,https://www.leonardovila.com"
+    ),
 )
 ALLOWED_ORIGINS = [o.strip() for o in _ALLOWED_ORIGINS_RAW.split(",") if o.strip()]
 
