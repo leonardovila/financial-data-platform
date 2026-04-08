@@ -122,8 +122,11 @@ export function TickStackSidebar() {
       </div>
       <TickHeader />
       
-      {/* Contenedor estático, sin flex-1 para que no se estire al pedo */}
-      <div className="bg-[var(--color-bg)]">
+      {/* Flex child clipped:
+          - flex-1: ocupa el espacio restante del sidebar (después del header + TickHeader)
+          - min-h-0: anula el min-height:auto default del flex item, permite encoger por debajo del contenido
+          - overflow-hidden: las filas que no entran se recortan (hachazo, sin scroll) */}
+      <div className="flex-1 min-h-0 overflow-hidden bg-[var(--color-bg)]">
         <TickList maxRows={20} />
       </div>
     </div>
