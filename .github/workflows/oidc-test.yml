@@ -1,0 +1,47 @@
+name: OIDC Verification
+
+# ──────────────────────────────────────────────────────────────────────────────
+# P1_02 — Prueba de fuego para OIDC federation GitHub → AWS
+#
+# Este workflow NO despliega nada. Solo verifica que GitHub Actions puede
+# asumir el rol GitHubActionsDeployRole via OIDC (sin access keys).
+#
+# Se dispara manualmente (workflow_dispatch) desde la pestaña Actions de GitHub.
+# Una vez verificado que funciona, este archivo se puede borrar o dejar como
+# referencia — el workflow real de CD (P1_04) va a usar el mismo patrón.
+# ──────────────────────────────────────────────────────────────────────────────
+
+on:
+  workflow_dispatch:  # Manual trigger only — click "Run workflow" in GitHub UI
+
+# ⚠️ CRÍTICO: sin esto, GitHub no genera el JWT que OIDC necesita.
+# "id-token: write" le dice a GitHub: "este workflow necesita pedir un token
+# OIDC al proveedor de tokens de GitHub Actions".
+# "contents: read" es el default que necesitamos para checkout.
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  verify-oidc:
+    name: Verify OIDC Role Assumption
+    runs-on: ubuntu-latest
+    steps:
+      - name: Configure AWS credentials via OIDC
+        # Esta action hace todo el handshake:
+        # 1. Pide un JWT al OIDC provider de GitHub (usando el permiso id-token: write)
+        # 2. Llama a AWS STS AssumeRoleWithWebIdentity con ese JWT
+        # 3. AWS valida el JWT contra el OIDC provider que registramos
+        # 4. AWS verifica las conditions (repo match, audience match)
+        # 5. Si todo pasa → credenciales temporales inyectadas como env vars
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::295933007543:role/GitHubActionsDeployRole
+          aws-region: us-east-2
+
+      - name: Verify identity
+        # Si esto imprime el ARN del rol, OIDC funciona.
+        # Esperamos ver:
+        #   "Arn": "arn:aws:sts::295933007543:assumed-role/GitHubActionsDeployRole/..."
+        #   "Account": "295933007543"
+        run: aws sts get-caller-identity
