@@ -1,0 +1,147 @@
+name: Deploy to ECS
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Continuous Deployment (P1_04)
+#
+# Este archivo es para GitHub Actions lo que docker-compose.yml es para Docker.
+# GitHub Actions lo lee y ejecuta los pasos en orden.
+#
+# Flujo: CI pasa en main → OIDC → ECR login → Docker build → Push → Deploy ECS
+# ──────────────────────────────────────────────────────────────────────────────
+
+# ¿CUÁNDO se ejecuta este workflow?
+# "workflow_run" = se activa cuando OTRO workflow termina.
+# En este caso, cuando el workflow llamado "CI" (ci.yml) termina en main.
+on:
+  workflow_run:
+    workflows: ["CI"]       # Nombre exacto del workflow CI (línea 1 de ci.yml)
+    types: [completed]      # Cuando TERMINA (no cuando arranca)
+    branches: [main]        # Solo si fue en la rama main
+
+# Permisos que necesita este workflow:
+# id-token: write = poder pedir un JWT a GitHub para autenticarse con AWS (OIDC)
+# contents: read  = poder leer el código del repo (para checkout)
+permissions:
+  id-token: write
+  contents: read
+
+# Si ya hay un deploy corriendo y llega otro push, cancelar el viejo.
+# Solo el último commit en main merece ser deployado.
+concurrency:
+  group: deploy-main
+  cancel-in-progress: true
+
+# Variables reutilizables. Se definen acá arriba una sola vez
+# y se usan abajo con ${{ env.NOMBRE }}.
+env:
+  AWS_REGION: us-east-2
+  ECR_REPOSITORY: financial-data-etl          # Nombre del repo de imágenes en ECR
+  ECS_CLUSTER: financial-data                 # Nombre del cluster en ECS
+  ECS_SERVICE: financial-data-api             # El service 24/7 (Fargate Service)
+  CONTAINER_NAME: api                         # Nombre del container dentro de la task definition
+  TASK_DEFINITION_FILE: aws/api-task-definition.json  # La receta de run-time
+
+jobs:
+  deploy:
+    name: Build & Deploy to ECS Fargate
+    runs-on: ubuntu-latest    # Máquina efímera de GitHub (se destruye al terminar)
+
+    # GATE: solo correr si CI fue verde. Sin esto, un CI rojo también dispararía el deploy.
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+
+    steps:
+      # ── PASO 1: Bajar el código ──────────────────────────────────────────
+      # Descarga el código del commit EXACTO que CI validó.
+      # head_sha = el SHA del commit que disparó CI (no "lo último en main").
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      # ── PASO 2: Autenticarse en AWS via OIDC ────────────────────────────
+      # GitHub pide un JWT → AWS STS lo verifica → devuelve credenciales de 1h.
+      # Es el mismo patrón que probamos en oidc-test.yml.
+      # Resultado: las variables AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY y
+      # AWS_SESSION_TOKEN quedan inyectadas en el runner para los pasos siguientes.
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::295933007543:role/GitHubActionsDeployRole
+          aws-region: ${{ env.AWS_REGION }}
+
+      # ── PASO 3: Login a ECR ──────────────────────────────────────────────
+      # Usa las credenciales temporales de OIDC para pedir un token de Docker.
+      # ECR devuelve un password efímero (TTL: 12h) y docker queda logueado.
+      # El output "registry" = "295933007543.dkr.ecr.us-east-2.amazonaws.com"
+      # (lo usamos en el paso siguiente para armar la URL de la imagen).
+      - name: Login to Amazon ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # ── PASO 4: Build + Tag + Push ──────────────────────────────────────
+      # Construye la imagen Docker desde el Dockerfile de la raíz del repo.
+      # La tagea con DOS nombres:
+      #   :SHA    → nombre inmutable (como un commit, nunca cambia)
+      #   :latest → puntero al más nuevo (como HEAD en git)
+      # Pushea ambos tags a ECR. Solo las capas que cambiaron se suben.
+      # La última línea exporta la URI completa de la imagen como output
+      # para que el paso siguiente la use.
+      - name: Build, tag, and push image to ECR
+        id: build-image
+        env:
+          ECR_REGISTRY: ${{ steps.ecr-login.outputs.registry }}   # Viene del paso 3
+          IMAGE_TAG: ${{ github.event.workflow_run.head_sha }}     # SHA del commit
+        run: |
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+          docker tag $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG \
+                     $ECR_REGISTRY/$ECR_REPOSITORY:latest
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+          echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+
+      # ── PASO 5: Preparar nueva task definition ──────────────────────────
+      # Lee api-task-definition.json (que tiene imagen :latest).
+      # Reemplaza el campo "image" del container "api" con la URI :SHA.
+      # Esto pasa EN MEMORIA — no modifica el archivo del repo.
+      # Output: un JSON temporal con la imagen actualizada.
+      - name: Render task definition with new image
+        id: render-task-def
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: ${{ env.TASK_DEFINITION_FILE }}
+          container-name: ${{ env.CONTAINER_NAME }}
+          image: ${{ steps.build-image.outputs.image }}   # URI :SHA del paso 4
+
+      # ── PASO 6: Deploy a ECS ────────────────────────────────────────────
+      # Hace dos cosas:
+      #   1. Registra una nueva REVISION de la task definition (como :3 → :4)
+      #   2. Le dice al Service "usá esta revision nueva"
+      # ECS hace rolling deployment: levanta task nueva, espera health check,
+      # drena la vieja, la mata. Zero downtime.
+      # wait-for-service-stability: espera ~2-3 min hasta confirmar que
+      # el container nuevo está healthy y el viejo está muerto.
+      - name: Deploy to ECS
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v1
+        with:
+          task-definition: ${{ steps.render-task-def.outputs.task-definition }}
+          service: ${{ env.ECS_SERVICE }}
+          cluster: ${{ env.ECS_CLUSTER }}
+          wait-for-service-stability: true
+
+      # ── PASO 7: Verificar que sigue vivo ────────────────────────────────
+      # Curl al endpoint real. Si después de 3 intentos no devuelve 200,
+      # el workflow falla en rojo (algo salió mal en el deploy).
+      - name: Smoke test
+        run: |
+          for i in 1 2 3; do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+                     https://api.leonardovila.com/health)
+            if [ "$STATUS" = "200" ]; then
+              echo "Smoke test passed"
+              exit 0
+            fi
+            echo "Attempt $i: got $STATUS, retrying in 10s..."
+            sleep 10
+          done
+          echo "Smoke test FAILED"
+          exit 1
