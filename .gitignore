@@ -16,7 +16,6 @@ build/
 dist/
 ignorar/
 nginx_vps_info/
-aws/
 
 # Transient PR body scratch files (used with `gh pr create --body-file`)
 .github/pr_body_*.md
