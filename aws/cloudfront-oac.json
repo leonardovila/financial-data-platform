@@ -1,0 +1,7 @@
+{
+  "Name": "app-leonardovila-s3-oac",
+  "Description": "OAC for app.leonardovila.com S3 bucket",
+  "SigningProtocol": "sigv4",
+  "SigningBehavior": "always",
+  "OriginAccessControlOriginType": "s3"
+}

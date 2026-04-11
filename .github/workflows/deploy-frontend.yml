@@ -1,0 +1,136 @@
+name: Deploy Frontend to S3
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Frontend CD (P1_06)
+#
+# Pipeline separado del backend. No hay Docker ni ECS acá.
+# Flujo: CI pasa → npm build → subir archivos a S3 → invalidar cache CloudFront
+#
+# Se activa SOLO cuando hay cambios en frontend/ — un cambio en el backend
+# no dispara rebuild del frontend (y viceversa).
+# ──────────────────────────────────────────────────────────────────────────────
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: deploy-frontend
+  cancel-in-progress: true
+
+env:
+  AWS_REGION: us-east-2
+  S3_BUCKET: app.leonardovila.com
+  CLOUDFRONT_DISTRIBUTION_ID: E38UNN0V7KQ23X
+
+jobs:
+  deploy:
+    name: Build & Deploy Frontend to S3
+    runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+
+    steps:
+      # ── PASO 1: Bajar el código ──────────────────────────────────────────
+      # Mismo patrón que deploy.yml — usa el SHA exacto que CI validó.
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          # fetch-depth: 2 nos permite ver qué archivos cambiaron
+          # en el último commit para decidir si hay cambios en frontend/
+          fetch-depth: 2
+
+      # ── PASO 2: Verificar si hay cambios en frontend/ ───────────────────
+      # Compara el commit actual con el anterior. Si NINGÚN archivo en
+      # frontend/ cambió, no tiene sentido rebuilder y resubir.
+      # El output "changed" se usa como gate en los pasos siguientes.
+      - name: Check for frontend changes
+        id: changes
+        run: |
+          if git diff --name-only HEAD~1 HEAD | grep -q '^frontend/'; then
+            echo "changed=true" >> $GITHUB_OUTPUT
+            echo "Frontend changes detected — proceeding with deploy"
+          else
+            echo "changed=false" >> $GITHUB_OUTPUT
+            echo "No frontend changes — skipping deploy"
+          fi
+
+      # ── PASO 3: Instalar Node.js ────────────────────────────────────────
+      # Solo si hay cambios en frontend/.
+      - name: Setup Node.js
+        if: steps.changes.outputs.changed == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      # ── PASO 4: Instalar dependencias ───────────────────────────────────
+      # npm ci = instalación limpia desde package-lock.json (reproducible).
+      - name: Install dependencies
+        if: steps.changes.outputs.changed == 'true'
+        working-directory: frontend
+        run: npm ci
+
+      # ── PASO 5: Build del frontend ──────────────────────────────────────
+      # Vite lee .env.production (VITE_API_URL y VITE_WS_URL) y genera
+      # los archivos estáticos en dist/. El base: '/financial/' de
+      # vite.config.ts hace que todos los assets usen ese prefijo.
+      - name: Build
+        if: steps.changes.outputs.changed == 'true'
+        working-directory: frontend
+        run: npm run build
+
+      # ── PASO 6: Autenticarse en AWS via OIDC ────────────────────────────
+      # Mismo mecanismo que deploy.yml — OIDC, sin secretos guardados.
+      - name: Configure AWS credentials (OIDC)
+        if: steps.changes.outputs.changed == 'true'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::295933007543:role/GitHubActionsDeployRole
+          aws-region: ${{ env.AWS_REGION }}
+
+      # ── PASO 7: Subir archivos a S3 ─────────────────────────────────────
+      # s3 sync = sube solo lo que cambió. --delete = borra archivos viejos
+      # que ya no existen en dist/. Es el equivalente al "docker push" pero
+      # para archivos estáticos. Los archivos se suben bajo /financial/
+      # para coincidir con el base path de Vite.
+      - name: Sync to S3
+        if: steps.changes.outputs.changed == 'true'
+        working-directory: frontend
+        run: aws s3 sync dist/ s3://${{ env.S3_BUCKET }}/financial/ --delete
+
+      # ── PASO 8: Invalidar cache de CloudFront ──────────────────────────
+      # CloudFront cachea los archivos ~24h (DefaultTTL en la distribución).
+      # Después de subir archivos nuevos, le decimos "olvidá todo lo que
+      # tenés cacheado bajo /financial/". Sin esto, los usuarios verían
+      # la versión vieja hasta que expire el cache.
+      # "/*" = invalidar TODO (más simple y seguro que invalidar selectivamente).
+      - name: Invalidate CloudFront cache
+        if: steps.changes.outputs.changed == 'true'
+        run: |
+          aws cloudfront create-invalidation \
+            --distribution-id ${{ env.CLOUDFRONT_DISTRIBUTION_ID }} \
+            --paths "/financial/*"
+          echo "CloudFront cache invalidated"
+
+      # ── PASO 9: Verificar ───────────────────────────────────────────────
+      # Smoke test: ¿el frontend carga? Esperamos status 200 en el index.
+      - name: Smoke test
+        if: steps.changes.outputs.changed == 'true'
+        run: |
+          sleep 10
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+                   https://app.leonardovila.com/financial/)
+          if [ "$STATUS" = "200" ]; then
+            echo "Frontend smoke test passed"
+          else
+            echo "Frontend smoke test FAILED (got $STATUS)"
+            exit 1
+          fi
