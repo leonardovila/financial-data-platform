@@ -39,7 +39,7 @@ env:
   ECS_CLUSTER: financial-data                 # Nombre del cluster en ECS
   ECS_SERVICE: financial-data-api             # El service 24/7 (Fargate Service)
   CONTAINER_NAME: api                         # Nombre del container dentro de la task definition
-  TASK_DEFINITION_FILE: aws/api-task-definition.json  # La receta de run-time
+  TASK_DEFINITION_FILE: aws/ecs/api-task-definition.json  # La receta de run-time
 
 jobs:
   deploy:
