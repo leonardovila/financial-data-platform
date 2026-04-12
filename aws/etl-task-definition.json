@@ -1,0 +1,31 @@
+{
+  "family": "financial-data-etl",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "512",
+  "memory": "1024",
+  "executionRoleArn": "arn:aws:iam::295933007543:role/ecsTaskExecutionRole",
+  "containerDefinitions": [
+    {
+      "name": "etl",
+      "image": "295933007543.dkr.ecr.us-east-2.amazonaws.com/financial-data-etl:latest",
+      "essential": true,
+      "entryPoint": ["python", "-m", "financial_data_etl.main_runner"],
+      "environment": [
+        {"name": "WS_POOL_SIZE", "value": "2"},
+        {"name": "SYMBOLS_PER_BATCH", "value": "5"}
+      ],
+      "secrets": [
+        {"name": "DATABASE_URL", "valueFrom": "arn:aws:secretsmanager:us-east-2:295933007543:secret:financial-data/rds-vqG2ip"}
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/financial-data-etl",
+          "awslogs-region": "us-east-2",
+          "awslogs-stream-prefix": "etl"
+        }
+      }
+    }
+  ]
+}

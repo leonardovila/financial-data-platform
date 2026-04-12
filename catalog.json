@@ -1,4 +1,16 @@
 {
+  "ELF": {
+    "provider_symbol": {
+      "tradingview": "NYSE:ELF"
+    },
+    "ticker": "ELF"
+  },
+  "RDDT": {
+    "provider_symbol": {
+      "tradingview": "NYSE:RDDT"
+    },
+    "ticker": "RDDT"
+  },
   "RKLB": {
     "provider_symbol": {
       "tradingview": "NASDAQ:RKLB"
