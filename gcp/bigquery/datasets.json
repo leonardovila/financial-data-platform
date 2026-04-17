@@ -1,0 +1,24 @@
+{
+  "project": "financial-data-etl",
+  "location": "US",
+  "datasets": [
+    {
+      "id": "financial_raw",
+      "layer": "bronze",
+      "description": "Bronze layer — copia cruda de los datos exportados desde RDS via Parquet/S3. Schema-on-read, sin transformaciones. Sirve como landing zone inmutable.",
+      "tables_expected": ["raw_tv_candles", "raw_fundamentals", "raw_performance", "raw_volatility"]
+    },
+    {
+      "id": "financial_staging",
+      "layer": "silver",
+      "description": "Silver layer — datos limpios, tipados, deduplicados. Transformaciones via DBT (cast de tipos, null handling, rename a snake_case consistente).",
+      "tables_expected": ["stg_tv_candles", "stg_fundamentals", "stg_assets"]
+    },
+    {
+      "id": "financial_marts",
+      "layer": "gold",
+      "description": "Gold layer — star schema Kimball listo para analytics y consumo por BI/dashboards. Dims estáticas + facts que crecen diariamente.",
+      "tables_expected": ["dim_asset", "dim_date", "fact_ohlcv", "fact_derived_metrics", "fact_fundamentals"]
+    }
+  ]
+}
