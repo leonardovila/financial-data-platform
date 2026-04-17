@@ -1,0 +1,51 @@
+{
+  "description": "Configuracion del pipeline de extraccion RDS -> S3 (bronze layer)",
+  "tables": [
+    {
+      "source_table": "tv_candles_raw",
+      "s3_prefix": "tv_candles_raw",
+      "filter": "is_partial = 0 AND timeframe = '1D'",
+      "partition_key": "run_date",
+      "why": "OHLCV diario. Filtramos timeframe=1D para analytics (excluimos intraday). is_partial=0 excluye la vela del dia actual si el mercado sigue abierto."
+    },
+    {
+      "source_table": "fundamentals_snapshot",
+      "s3_prefix": "fundamentals_snapshot",
+      "filter": "none",
+      "partition_key": "run_date",
+      "why": "Snapshot de fundamentals por simbolo. No tiene ts unix — as_of_ts es TEXT. Cada run del ETL agrega snapshot nuevo, construyendo historico forward."
+    },
+    {
+      "source_table": "volatility_1d",
+      "s3_prefix": "volatility_1d",
+      "filter": "is_partial = 0",
+      "partition_key": "run_date",
+      "why": "Metricas de volatilidad diaria: range_intraday, vol_1w/1m/3m/6m/1y."
+    },
+    {
+      "source_table": "performance_1d",
+      "s3_prefix": "performance_1d",
+      "filter": "is_partial = 0",
+      "partition_key": "run_date",
+      "why": "Returns diarios: ret_1d/1w/1m/3m/6m/1y (% de cambio de precio)."
+    },
+    {
+      "source_table": "momentum_1d",
+      "s3_prefix": "momentum_1d",
+      "filter": "is_partial = 0",
+      "partition_key": "run_date",
+      "why": "Indicadores de momentum: RSI 14, SMA gaps 20/50/200, dist maximos 1m/1y."
+    }
+  ],
+  "s3": {
+    "bucket": "leonardovila-financial-raw",
+    "format": "parquet",
+    "compression": "snappy",
+    "path_pattern": "<table>/run_date=<YYYY-MM-DD>/data.parquet"
+  },
+  "notes": [
+    "ts en tablas metricas es Unix epoch seconds (BIGINT) — convertido a DATE en la query",
+    "Bucket separado del bucket de frontend (app.leonardovila.com) para isolacion de concerns",
+    "BigQuery puede leer este Parquet como external table o via bq load"
+  ]
+}
