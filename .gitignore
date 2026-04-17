@@ -10,6 +10,7 @@ __pycache__/
 *transition_bible.json
 *vps_info.md
 *response.json
+*inspect_rds.py
 
 # Build / packaging artifacts
 financial_data_etl.egg-info/
