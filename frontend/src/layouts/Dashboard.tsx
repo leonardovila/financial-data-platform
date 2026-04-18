@@ -22,9 +22,9 @@ export default function Dashboard() {
 
   return (
     <div className="h-dvh w-full overflow-hidden bg-[var(--color-bg)] flex flex-col">
-      {/* ── ROW 0: Back to root (replaces VPS nginx sub_filter) ── */}
+      {/* ── ROW 0: Back to root (Bridge to VPS Landing) ── */}
       <a
-        href="/"
+        href="https://www.leonardovila.com/"
         className={[
           "shrink-0 flex items-center gap-1.5",
           "h-9 px-4 lg:px-3",
