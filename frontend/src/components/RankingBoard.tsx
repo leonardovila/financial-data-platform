@@ -15,6 +15,7 @@
 
 import { useEffect, useState } from "react";
 import InfoTooltip from "./InfoTooltip";
+import { ANOMALIES_SNAPSHOT, SNAPSHOT_AS_OF } from "../data/anomaliesSnapshot";
 
 const API_BASE = import.meta.env.VITE_API_URL ?? `${window.location.origin}`;
 
@@ -93,6 +94,18 @@ export default function RankingBoard({
 
   useEffect(() => {
     let cancelled = false;
+
+    const applyFilter = (pool: AnomalyRow[]): AnomalyRow[] => {
+      let filtered = [...pool];
+      if (filter === "pos") {
+        filtered = filtered.filter((x) => (x.z_of_z ?? 0) > 0);
+      } else if (filter === "neg") {
+        filtered = filtered.filter((x) => (x.z_of_z ?? 0) < 0);
+      }
+      filtered.sort((a, b) => Math.abs(b.z_of_z ?? 0) - Math.abs(a.z_of_z ?? 0));
+      return filtered.slice(0, limit);
+    };
+
     (async () => {
       setLoading(true);
       setError(null);
@@ -103,18 +116,18 @@ export default function RankingBoard({
         const json = (await r.json()) as AnomalyResponse;
         if (cancelled) return;
 
-        let filtered = json.rows;
-        if (filter === "pos") {
-          filtered = filtered.filter((x) => (x.z_of_z ?? 0) > 0);
-        } else if (filter === "neg") {
-          filtered = filtered.filter((x) => (x.z_of_z ?? 0) < 0);
-        }
-        filtered.sort((a, b) => Math.abs(b.z_of_z ?? 0) - Math.abs(a.z_of_z ?? 0));
-
-        setRows(filtered.slice(0, limit));
+        setRows(applyFilter(json.rows));
         setAsOf(json.as_of_date);
       } catch (e) {
-        if (!cancelled) setError(String(e));
+        if (cancelled) return;
+        const pool = (ANOMALIES_SNAPSHOT[metric] ?? []) as AnomalyRow[];
+        if (pool.length > 0) {
+          setRows(applyFilter(pool));
+          setAsOf(SNAPSHOT_AS_OF);
+          setError(null);
+        } else {
+          setError(String(e));
+        }
       } finally {
         if (!cancelled) setLoading(false);
       }
