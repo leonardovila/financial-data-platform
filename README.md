@@ -1,8 +1,13 @@
 # financial-data-etl
 
-Full-stack financial data platform: batch ETL pipeline (2,425 symbols) + real-time WebSocket streaming + React terminal UI.
+Full-stack financial data platform: batch ETL + real-time WebSocket streaming + medallion DWH (bronze/silver/gold) on BigQuery + React terminal UI.
 
-Dockerized. Runs on PostgreSQL (production) with SQLite fallback (dev/legacy). Currently deployed on VPS, designed for AWS migration (ECS Fargate + RDS).
+Two products share the same ingest layer:
+
+1. **Operational dashboard** at `/financial/` — live OHLCV chart (TradingView WS) + derived metrics.
+2. **Analíticas Avanzadas** at `/financial/avanzadas/` — daily outlier detector powered by a three-layer z-score stack (`z_intra` / `z_cross` / `z_of_z`) computed in BigQuery by DBT.
+
+Dockerized. Runs on PostgreSQL (OLTP) + S3 (bronze) + BigQuery (silver/gold). Currently deployed on VPS, in active migration to AWS (ECS Fargate + RDS + Lambda-orchestrated ETL).
 
 **Live:** [leonardovila.com/financial](https://leonardovila.com/financial/)
 
@@ -10,45 +15,52 @@ Dockerized. Runs on PostgreSQL (production) with SQLite fallback (dev/legacy). C
 
 ## Architecture Overview
 
-The system has two execution modes sharing the same data layer, packaged as Docker containers:
-
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                        DOCKER COMPOSE STACK                         │
-│                                                                     │
-│  ┌───────────┐  ┌───────────┐  ┌───────────┐  ┌───────────────┐     │
-│  │ postgres  │  │ api       │  │ etl       │  │ frontend      │     │
-│  │ (PG 16)   │  │ (FastAPI) │  │ (on-demand│  │ (Nginx+React) │     │
-│  │           │  │           │  │  runner)  │  │               │     │
-│  │ :5432     │  │ :8000     │  │           │  │ :3000         │     │
-│  └─────┬─────┘  └─────┬─────┘  └─────┬─────┘  └───────────────┘     │ 
-│        │              │              │                              │
-│        └──── DATABASE_URL ───────────┘                              │
-└─────────────────────────────────────────────────────────────────────┘
-
-┌─────────────────────────────────────────────────────────────────────┐
-│                     MODE 1: BATCH ETL (cron)                        │
-│                                                                     │
-│  catalog.json ─→ increment_plan ─→ WS Pool (6 conn) ─→ PostgreSQL   │
-│  (2,425 syms)    (bootstrap/catchup)  (asyncio.Queue)               │
-│                                                                     │
-│  PostgreSQL ─→ Pandas groupby ─→ performance_1d / volatility_1d /   │
-│                 (vectorized)       volume_1d (bulk executemany)     │
-└─────────────────────────────────────────────────────────────────────┘
-
-┌─────────────────────────────────────────────────────────────────────┐
-│                  MODE 2: LIVE STREAMING (FastAPI)                   │
-│                                                                     │
-│  Browser WS ──→ /ws/live/{symbol}                                   │
-│                    │                                                │
-│                    ├─ SEED: DB → 4,500 bars + metrics (5-15ms)      │
-│                    │                                                │
-│                    └─ EDGE: TradingView WS → in-memory DataFrame    │
-│                             → compute_all_metrics_live (<1ms)       │
-│                             → send_json({type:'tick', ...})         │
-│                                                                     │
-│  React UI ←── Zustand store ←── seed/tick/fundamentals/heartbeat    │
-└─────────────────────────────────────────────────────────────────────┘
+┌───────────────────────── INGEST (batch + stream) ────────────────────────────┐
+│                                                                              │
+│  catalog.json ──► TradingView WS pool (6 conn) ──► PostgreSQL (tv_candles,   │
+│  (~50 symbols)     asyncio.Queue                  fundamentals, *_1d)        │
+│                                                                              │
+│  Browser WS ──► /ws/live/{symbol} ──► seed (DB) + edge (TV live)             │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌──────────────────────── BRONZE EXPORT (etl_extract/) ────────────────────────┐
+│                                                                              │
+│  PostgreSQL ──► extract_to_s3.py ──► s3://.../bronze/{table}/dt=YYYY-MM-DD/  │
+│                 (Parquet + snapshot manifest)                                │
+│                                                                              │
+│  S3 bronze ──► load_to_bigquery.py ──► BigQuery raw tables (silver source)   │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌───────────────────── ANALYTICS — DBT MEDALLION (financial_dwh/) ─────────────┐
+│                                                                              │
+│  staging/       → typed, renamed, tested versions of bronze                  │
+│  intermediate/  → returns, rolling vol, SMA gaps, 52w extremes               │
+│  marts/         → dim_date, dim_asset, fact_ohlcv, fact_fundamentals,        │
+│                   fact_derived_metrics (+ three-layer z-scores)              │
+│                                                                              │
+│  Gold serves:   z_intra (252d history per symbol)                            │
+│                 z_cross (cross-section snapshot today)                       │
+│                 z_of_z  (anomaly of anomaly)                                 │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌───────────────────────── SERVING — FastAPI + React ──────────────────────────┐
+│                                                                              │
+│  FastAPI  /ohlcv, /fundamentals, /performance, /volatility, /volume  (RDS)   │
+│           /ws/live/{symbol}                                          (RDS+TV)│
+│           /analytics/anomalies, /analytics/metrics                  (BigQuery│
+│                                                                       + TTL) │
+│                                                                              │
+│  React    /financial/            → Dashboard (chart + metrics + WS)          │
+│           /financial/avanzadas/  → Ranking boards + dense multi-metric table │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -58,71 +70,77 @@ The system has two execution modes sharing the same data layer, packaged as Dock
 ```
 financial-data-etl/
 ├── Dockerfile                        # Multi-stage backend image (API + ETL)
-├── docker-compose.yml                # Full stack: postgres + api + etl + frontend
-├── .env.example                      # Template for Docker env vars
+├── docker-compose.yml                # postgres + api + etl + frontend
+├── apunte_sistema.md                 # High-level system overview (ES)
 │
-├── financial_data_etl/               # Python package
+├── financial_data_etl/               # Python package (ingest + API)
 │   ├── main_runner.py                # Batch ETL orchestrator (7 stages)
-│   │
-│   ├── scraping_pipeline/
-│   │   └── tv_websocket_connection/
-│   │       ├── call_execution/
-│   │       │   └── tradingview_ws.py       # WS protocol: batch multiplexing + live stream generator
-│   │       ├── call_specification/
-│   │       │   ├── asset_catalog.py        # catalog.json loader + provider symbol resolution
-│   │       │   ├── call_builder.py         # CallSpec factory
-│   │       │   └── timeframes_registry.py  # Timeframe constants
-│   │       ├── parsing/
-│   │       │   └── ohlcv_parser.py         # TradingView → [ts, o, h, l, c, v]
-│   │       └── tv_websocket_scraper.py     # Pool workers + asyncio.Queue + batch orchestration
-│   │
-│   ├── derived_metrics/
-│   │   ├── price_performance/
-│   │   │   ├── price_performance_runner.py # LAGS: ret_1d→ret_1y (Pandas pct_change)
-│   │   │   └── price_performance_store.py  # Bulk SQL read/write
-│   │   ├── volatility/
-│   │   │   ├── volatility_runner.py        # VOL_WINDOWS: vol_1w→vol_1y (rolling std of log returns)
-│   │   │   └── volatility_store.py
-│   │   └── volume/
-│   │       ├── volume_runner.py            # SMA_WINDOWS: [20, 50, 100, 200] + gap %
-│   │       └── volume_store.py
-│   │
-│   ├── storage/
-│   │   ├── database.py               # DB adapter — engine-agnostic (PostgreSQL / SQLite)
-│   │   ├── tv_candles_store.py       # tv_candles_raw upsert
-│   │   ├── ohlcv_row_builder.py      # Candle normalization + partial bar detection
-│   │   ├── ohlcv_base_store.py       # Batch persist orchestration
-│   │   └── paths.py                  # DB_PATH constant (SQLite fallback)
-│   │
-│   ├── api/                          # FastAPI live streaming layer
-│   │   ├── app.py                    # 8 REST + 1 WS endpoint + security + lifespan
-│   │   ├── live_seed.py              # Cold-start: 5 SQL queries → full chart payload
-│   │   ├── live_state.py             # LiveSymbolState: 258-row in-memory DataFrame
-│   │   ├── live_compute.py           # Pure math: performance + volatility + volume (<1ms)
-│   │   └── live_session_manager.py   # Dedicated TV WS per subscriber
-│   │
+│   ├── scraping_pipeline/            # TradingView WS client + parsers
+│   ├── derived_metrics/              # performance / volatility / volume runners
+│   ├── storage/                      # DB adapter (PG / SQLite), row builders
+│   ├── api/
+│   │   ├── app.py                    # REST + WS endpoints
+│   │   ├── bq_analytics.py           # BigQuery client (lazy singleton + TTL cache)
+│   │   ├── live_seed.py              # Cold-start WS seed
+│   │   ├── live_state.py             # 258-row in-memory DataFrame
+│   │   ├── live_compute.py           # Pure metric math (<1ms)
+│   │   └── live_session_manager.py   # Per-subscriber TV session
+│   ├── universe/                     # Index composition refresh
 │   └── observability/
 │       └── run_context.py            # Structured JSON logging
 │
-├── frontend/                         # React + TypeScript + Vite
-│   ├── Dockerfile                    # Multi-stage: npm build → Nginx static server
-│   └── src/
-│       ├── store/
-│       │   └── wsStore.ts            # Zustand: WS lifecycle, reconnection, state slices
-│       ├── components/
-│       │   ├── Chart.tsx             # Lightweight Charts v5 (autoSize, O(1) update)
-│       │   ├── TickStack.tsx         # Live feed: GPU slideIn, 50 desktop / 20 mobile
-│       │   ├── MetricsGrid.tsx       # Perf + Vol + Volume cards (scroll-snap tabs mobile)
-│       │   ├── MetricCard.tsx        # Individual metric card
-│       │   ├── FundamentalsBar.tsx   # Mkt Cap, P/E, EPS, Sector
-│       │   ├── SymbolSearch.tsx      # Inline search with autocomplete
-│       │   └── StatusBar.tsx         # Connection status, symbol, tick count
-│       ├── lib/
-│       │   └── formatters.ts         # Currency, percent, compact number formatting
-│       └── types/
-│           └── market.ts             # TypeScript interfaces for all WS payloads
+├── etl_extract/                      # RDS → S3 → BigQuery bridge
+│   ├── extract-config.json           # Per-table CDC config
+│   ├── extract_to_s3.py              # RDS → Parquet partitioned by ingest date
+│   ├── load_to_bigquery.py           # S3 → BigQuery external/native load
+│   └── backfill_derived_metrics.py   # One-shot rebuild helper
 │
-├── catalog.json                      # 2,425 symbols with provider mappings
+├── financial_dwh/                    # DBT project (BigQuery)
+│   ├── dbt_project.yml
+│   ├── packages.yml                  # dbt_utils
+│   ├── models/
+│   │   ├── staging/                  # stg_tv_candles, stg_fundamentals, ...
+│   │   ├── intermediate/             # int_returns, int_rolling_vol, int_sma_gaps
+│   │   └── marts/                    # dim_* + fact_* (Kimball star schema)
+│   ├── macros/
+│   ├── tests/
+│   └── seeds/
+│
+├── aws/                              # IaC scaffolding (JSON definitions)
+│   ├── ecs/                          # api + etl + utility task definitions
+│   ├── lambda/                       # EventBridge-triggered ETL launcher
+│   ├── eventbridge/
+│   ├── s3/                           # bronze bucket + lifecycle rules
+│   ├── cloudfront/
+│   └── github-actions/               # CI/CD workflows
+│
+├── gcp/
+│   ├── bigquery/                     # Dataset/table DDL
+│   └── bigquery-sa-key.json          # Service account key (gitignored)
+│
+├── frontend/                         # React 19 + Vite 8 + TS + Tailwind 4
+│   ├── Dockerfile                    # Multi-stage: npm build → Nginx
+│   └── src/
+│       ├── App.tsx                   # Mini-router by window.location.pathname
+│       ├── layouts/
+│       │   ├── Dashboard.tsx                 # /financial/
+│       │   └── AdvancedAnalyticsPage.tsx     # /financial/avanzadas/
+│       ├── components/
+│       │   ├── Chart.tsx                     # Lightweight Charts v5
+│       │   ├── TickStack.tsx                 # Live tick feed
+│       │   ├── MetricsGrid.tsx               # Perf / Vol / Volume cards
+│       │   ├── MetricCard.tsx
+│       │   ├── FundamentalsBar.tsx
+│       │   ├── SymbolSearch.tsx
+│       │   ├── StatusBar.tsx
+│       │   ├── InfoTooltip.tsx               # Viewport-aware click-popover
+│       │   ├── RankingBoard.tsx              # Per-metric outlier podium
+│       │   └── AdvancedAnalytics.tsx         # Dense multi-metric table
+│       ├── store/wsStore.ts                  # Zustand WS state
+│       ├── lib/formatters.ts
+│       └── types/market.ts
+│
+└── catalog.json                      # Symbol universe with provider mappings
 ```
 
 ---
@@ -132,6 +150,7 @@ financial-data-etl/
 ### Requirements
 
 - Docker + Docker Compose
+- (For analytics) GCP service account key with BigQuery read access
 
 ### 1. Configure environment
 
@@ -139,66 +158,77 @@ financial-data-etl/
 git clone https://github.com/leonardovila/financial-data-etl.git
 cd financial-data-etl
 cp .env.example .env
-# Edit .env with your PostgreSQL credentials
+# Edit .env with PostgreSQL credentials + GCP vars
 ```
 
-`.env.example`:
+`.env` essentials:
 ```
 POSTGRES_USER=forge
 POSTGRES_PASSWORD=your_password_here
 POSTGRES_DB=financial_data
 DATABASE_URL=postgresql://forge:your_password_here@postgres:5432/financial_data
+
+# Analytics (Gold layer)
+GCP_PROJECT=your-gcp-project
+GOOGLE_APPLICATION_CREDENTIALS=/app/gcp/bigquery-sa-key.json
 ```
 
 ### 2. Start the stack
 
 ```bash
-docker compose up -d          # Starts: postgres + api + frontend
+docker compose up -d          # postgres + api + frontend
 ```
 
-This brings up:
-- **PostgreSQL 16** on `:5432` (data persisted in `pg_data` volume)
-- **FastAPI** on `:8000` (live streaming API)
-- **Nginx + React** on `:3000` (frontend SPA)
+Services:
+- **PostgreSQL 16** `:5432` (persisted in `pg_data` volume)
+- **FastAPI** `:8000` (REST + WS + analytics)
+- **Nginx + React** `:3000` (SPA)
 
 ### 3. Run Batch ETL
-
-The ETL runs on demand (not as a persistent service):
 
 ```bash
 docker compose run etl --assets NVDA                # Single asset test
 docker compose run etl --dji                        # Dow Jones (30 symbols)
-docker compose run etl --spx                        # S&P 500
 docker compose run etl --spx --ndx                  # S&P 500 + Nasdaq 100
 ```
 
-### 4. Stop everything
+### 4. Bronze export + DBT run (manual, pre-Lambda)
 
 ```bash
-docker compose down            # Stops containers (data persists in pg_data volume)
-docker compose down -v         # Stops containers AND deletes PostgreSQL data
+# Dump RDS → S3 Parquet (bronze)
+python etl_extract/extract_to_s3.py
+
+# Load bronze → BigQuery raw
+python etl_extract/load_to_bigquery.py
+
+# Transform silver + gold
+cd financial_dwh && dbt deps && dbt run && dbt test
+```
+
+### 5. Stop everything
+
+```bash
+docker compose down            # Stops containers (data persists)
+docker compose down -v         # Stops AND deletes PostgreSQL data
 ```
 
 ### Local development (without Docker)
-
-For running outside Docker (e.g., debugging), set `DATABASE_URL` to point to a running PostgreSQL instance, or leave it unset to fall back to SQLite:
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -e .
 
-# With PostgreSQL:
+# With PostgreSQL + BigQuery analytics:
 DATABASE_URL=postgresql://user:pass@localhost:5432/financial_data \
+GCP_PROJECT=your-project \
+GOOGLE_APPLICATION_CREDENTIALS=./gcp/bigquery-sa-key.json \
   uvicorn financial_data_etl.api.app:app --port 8000
 
-# With SQLite (legacy, no DATABASE_URL needed):
-uvicorn financial_data_etl.api.app:app --port 8000
-```
-
-Frontend dev server:
-```bash
+# Frontend
 cd frontend && npm install && npm run dev    # → http://localhost:5173
 ```
+
+Vite dev proxy maps `/symbols`, `/ohlcv`, `/ws`, `/analytics` → `localhost:8000`.
 
 ---
 
@@ -208,35 +238,67 @@ Seven sequential stages, stage 6 parallelized:
 
 | Stage | Name | Action |
 |-------|------|--------|
-| 1 | Universe Resolution | Load catalog.json → 2,425 tickers |
+| 1 | Universe Resolution | Load catalog.json → symbol list |
 | 2 | Increment Plan | Query DB → determine n_candles per symbol (bootstrap=4500, catchup=3-25) |
-| 3 | WebSocket Scraping | 6 persistent connections drain asyncio.Queue. Multiplexed OHLCV+fundamentals per symbol. 3-layer timeout (recv=30s, send=10s, symbol=60s) |
-| 4 | OHLCV Persistence | Bulk executemany(). Calendar-aware partial bar detection (exchange_calendars cached per exchange) |
-| 5 | Fundamentals Persistence | Extract market_cap, P/E, EPS, shares, sector, industry → bulk upsert |
-| 6 | Derived Metrics | **ThreadPoolExecutor(3)** runs price_performance + volatility + volume **in parallel**. Each: 1 bulk SQL read (ROW_NUMBER PARTITION BY) → 1 Pandas DataFrame → groupby().rolling() → 1 bulk write |
+| 3 | WebSocket Scraping | 6 persistent TradingView connections drain asyncio.Queue. Multiplexed OHLCV + fundamentals. 3-layer timeout (recv=30s, send=10s, symbol=60s) |
+| 4 | OHLCV Persistence | Bulk `executemany`. Calendar-aware partial-bar detection (exchange_calendars) |
+| 5 | Fundamentals Persistence | market_cap, P/E, EPS, shares, sector, industry → bulk upsert |
+| 6 | Derived Metrics | `ThreadPoolExecutor(3)` runs performance + volatility + volume **in parallel**. Each: 1 bulk read → Pandas groupby().rolling() → 1 bulk write |
 | 7 | Finalize | Close DB, output execution report |
-
-**Key optimization:** SQL queries → 6 total (1 read + 1 write × 3 runners).
 
 ---
 
-## Live Streaming API
+## Bronze → Silver → Gold (DBT Medallion)
 
-### Endpoints
+### Bronze export (`etl_extract/`)
 
-| Route | Type | Purpose |
-|-------|------|---------|
-| `GET /` | REST | Health check |
-| `GET /symbols` | REST | All symbols with company names (TTL cached 300s) |
-| `GET /ohlcv/history/{symbol}` | REST | Historical candles (max 4500) |
-| `GET /fundamentals/{symbol}` | REST | Latest fundamentals snapshot |
-| `GET /performance/1d/{symbol}` | REST | Price performance metrics |
-| `GET /volatility/1d/{symbol}` | REST | Volatility metrics |
-| `GET /volume/1d/{symbol}` | REST | Volume metrics |
-| **`WS /ws/live/{symbol}`** | **WebSocket** | **Seed & Edge live streaming** |
-| `GET /ws/stats` | REST | Active connections monitor |
+`extract_to_s3.py` reads incrementally from RDS per table config in `extract-config.json`, writes Parquet partitioned by `dt=YYYY-MM-DD` under `s3://<bucket>/bronze/<table>/`, and emits a snapshot manifest. `load_to_bigquery.py` then ingests those files into BigQuery raw tables.
 
-### WebSocket Protocol
+### DBT layers (`financial_dwh/`)
+
+| Layer | Models | Purpose |
+|-------|--------|---------|
+| `staging/` | `stg_tv_candles`, `stg_fundamentals`, `stg_*` | Typed, renamed, tested versions of bronze |
+| `intermediate/` | `int_returns`, `int_rolling_vol`, `int_sma_gaps`, `int_52w_extremes` | Single-purpose transforms |
+| `marts/` | `dim_date`, `dim_asset`, `fact_ohlcv`, `fact_fundamentals`, `fact_derived_metrics` | Kimball star schema + z-score layers |
+
+### Three-layer z-score stack (gold)
+
+Computed per `(symbol, as_of_date, metric)` inside `fact_derived_metrics`:
+
+| Layer | Meaning | Baseline |
+|-------|---------|----------|
+| `z_intra` | How weird is this symbol **vs its own 252d history**? | Rolling per-symbol μ / σ |
+| `z_cross` | How weird is this symbol **vs the rest of the universe today**? | Cross-section snapshot μ / σ |
+| `z_of_z` | Anomaly of anomaly: is the intraday weirdness itself unusual? | Cross-section of `z_intra` |
+
+`|z_of_z|` is what drives rankings on `/financial/avanzadas/`.
+
+---
+
+## Serving Layer — FastAPI
+
+### REST + WS endpoints
+
+| Route | Type | Source | Purpose |
+|-------|------|--------|---------|
+| `GET /` | REST | — | Health |
+| `GET /symbols` | REST | RDS | All symbols (TTL 300s) |
+| `GET /ohlcv/history/{symbol}` | REST | RDS | Historical candles (max 4500) |
+| `GET /fundamentals/{symbol}` | REST | RDS | Latest fundamentals |
+| `GET /performance/1d/{symbol}` | REST | RDS | Price performance |
+| `GET /volatility/1d/{symbol}` | REST | RDS | Volatility metrics |
+| `GET /volume/1d/{symbol}` | REST | RDS | Volume metrics |
+| **`WS /ws/live/{symbol}`** | **WS** | **RDS + TV** | **Seed & edge live streaming** |
+| `GET /analytics/anomalies` | REST | BigQuery | Ranked outliers per metric |
+| `GET /analytics/metrics` | REST | BigQuery | Supported metric catalog |
+| `GET /ws/stats` | REST | — | Active WS connections monitor |
+
+### BigQuery client (`api/bq_analytics.py`)
+
+Lazy-initialized singleton (first call pays cold-start, rest share). Each analytics query is wrapped in an in-process TTL cache so the UI polling doesn't hit BigQuery on every tab switch. Credentials via `GOOGLE_APPLICATION_CREDENTIALS`; project via `GCP_PROJECT`.
+
+### WebSocket protocol
 
 **Client → Server:**
 ```json
@@ -247,21 +309,42 @@ Seven sequential stages, stage 6 parallelized:
 **Server → Client:**
 ```json
 {"type": "seed", "symbol": "AAPL", "chart_candles": [...], "fundamentals": {...}, "metrics": {...}}
-{"type": "tick", "candle": {...}, "metrics": {"performance": {...}, "volatility": {...}, "volume": {...}}}
+{"type": "tick", "candle": {...}, "metrics": {...}}
 {"type": "fundamentals", "data": {...}}
 {"type": "company_name", "name": "Apple Inc"}
 {"type": "heartbeat"}
-{"type": "session_expired"}
 {"type": "idle_warning"}
+{"type": "session_expired"}
 ```
 
 ### Security
 
-- **Origin validation:** Pre-accept check against `ALLOWED_ORIGINS` whitelist
-- **Demo token:** Optional `?token=xxx` query param (env: `LIVE_DEMO_TOKEN`)
-- **Connection limit:** MAX_CONNECTIONS=5
-- **Zombie protection:** 2h hard TTL, 5min idle warning, 10min idle disconnect
-- **CORS:** Conditional — `["*"]` only in `DEBUG=1` mode
+- Origin validation: pre-accept check against `ALLOWED_ORIGINS`
+- Optional demo token `?token=xxx` (env: `LIVE_DEMO_TOKEN`)
+- `MAX_CONNECTIONS=5`
+- Zombie protection: 2h hard TTL, 5min idle warning, 10min idle disconnect
+- CORS: `["*"]` only when `DEBUG=1`
+
+---
+
+## Frontend — React 19
+
+### Routes
+
+Mini-router in `App.tsx` switches on `window.location.pathname` (no react-router):
+
+| Path | Component | Purpose |
+|------|-----------|---------|
+| `/financial/` | `Dashboard` | Chart + live ticks + metrics grid + fundamentals |
+| `/financial/avanzadas/` | `AdvancedAnalyticsPage` | 3×3 ranking boards + dense multi-metric table |
+
+### Dashboard
+
+Driven by a single Zustand store (`wsStore.ts`) that owns the WS lifecycle (connect, switch, reconnect, tick reducer). Top-level components subscribe to narrow slices to minimize re-renders.
+
+### Analíticas Avanzadas
+
+Nine `RankingBoard`s arranged in a responsive 1/2/3-column grid, each hitting `/analytics/anomalies?metric=<m>` and rendering the top-3 by `|z_of_z|`. Metrics: RSI (pos/neg), 1M/3M vol, 1M return (pos/neg), SMA-200 gap, 52w high distance, intraday range. Every card has an `InfoTooltip` explaining the ranking. A dense multi-metric table below lets users browse the full `fact_derived_metrics` surface.
 
 ---
 
@@ -269,47 +352,52 @@ Seven sequential stages, stage 6 parallelized:
 
 ### Database adapter (`storage/database.py`)
 
-Single point of contact for all DB operations. Every store and runner imports from `database.py` — no module touches `sqlite3` or `psycopg2` directly.
-
-Engine selection is driven by one env var:
+Single point of contact. No module touches `sqlite3` or `psycopg2` directly.
 
 | `DATABASE_URL` | Engine | Use case |
 |---|---|---|
 | `postgresql://...` | psycopg2 (TCP) | Production (Docker, VPS, AWS RDS) |
-| absent / file path | sqlite3 (local file, WAL mode) | Dev / legacy fallback |
+| absent / file path | sqlite3 (WAL mode) | Dev / legacy fallback |
 
-The adapter exposes engine-agnostic primitives: `get_connection()`, `transaction()`, `execute()`, `executemany()`, `fetchall()`, `fetchone()`, and a runtime placeholder (`PH`) that swaps `?` ↔ `%s` transparently. Stores write standard SQL and never branch on engine type.
+Exposes engine-agnostic primitives: `get_connection`, `transaction`, `execute`, `executemany`, `fetchall`, `fetchone`, and a runtime placeholder (`PH`) that swaps `?` ↔ `%s`.
 
-### Schema
+### OLTP schema (RDS)
 
 | Table | Primary Key | Description |
 |-------|-------------|-------------|
 | `tv_candles_raw` | `(symbol, timeframe, ts)` | Daily OHLCV candles |
 | `fundamentals_snapshot` | `(symbol, as_of_ts)` | Market cap, P/E, EPS, sector, industry |
-| `performance_1d` | `(symbol, timeframe, ts)` | ret_1d, ret_1w, ret_1m, ret_3m, ret_6m, ret_1y |
-| `volatility_1d` | `(symbol, timeframe, ts)` | range_intraday, vol_1w→vol_1y (annualized, ddof=1) |
-| `volume_1d` | `(symbol, timeframe, ts)` | volume_usd, vol_sma_20→200, vol_gap_20→200 |
+| `performance_1d` | `(symbol, timeframe, ts)` | ret_1d → ret_1y |
+| `volatility_1d` | `(symbol, timeframe, ts)` | range_intraday, vol_1w → vol_1y (annualized) |
+| `volume_1d` | `(symbol, timeframe, ts)` | volume_usd, vol_sma_{20,50,100,200}, vol_gap_* |
+
+### Analytical schema (BigQuery — `financial_marts`)
+
+| Model | Grain | Description |
+|-------|-------|-------------|
+| `dim_date` | day | Business-day calendar |
+| `dim_asset` | symbol | Sector, tier, listing meta |
+| `fact_ohlcv` | symbol × day | Clean OHLCV |
+| `fact_fundamentals` | symbol × day | Forward-filled snapshots |
+| `fact_derived_metrics` | symbol × day × metric | Metric value + `z_intra` + `z_cross` + `z_of_z` |
 
 ---
 
 ## Key Constants
 
 ```python
-# Derived metrics windows
 LAGS = {"ret_1d": 1, "ret_1w": 5, "ret_1m": 21, "ret_3m": 63, "ret_6m": 126, "ret_1y": 252}
 VOL_WINDOWS = {"vol_1w": 5, "vol_1m": 21, "vol_3m": 63, "vol_6m": 126, "vol_1y": 252}
 SMA_WINDOWS = [20, 50, 100, 200]
 ANNUALIZATION_FACTOR = sqrt(252)  # ≈ 15.87
 
-# Live state
-MAX_BARS = 258  # Buffer for all metric windows: max(252, 200) + overlap
+MAX_BARS = 258  # max(252, 200) + overlap
 
-# WebSocket timeouts
-RECV_TIMEOUT = 30       # per ws.recv()
-SEND_TIMEOUT = 10       # per ws.send()
-SYMBOL_TIMEOUT = 60     # per-symbol outer timeout
-CONNECT_MAX_RETRIES = 3 # exponential backoff: 1s, 2s, 4s
-STREAM_RECV_TIMEOUT = 45  # live stream (more generous for quiet markets)
+RECV_TIMEOUT = 30
+SEND_TIMEOUT = 10
+SYMBOL_TIMEOUT = 60
+CONNECT_MAX_RETRIES = 3  # exponential backoff: 1s, 2s, 4s
+STREAM_RECV_TIMEOUT = 45
 ```
 
 ---
@@ -317,35 +405,34 @@ STREAM_RECV_TIMEOUT = 45  # live stream (more generous for quiet markets)
 ## CLI Reference
 
 ```bash
-# Single assets
+# Batch ETL
 python -m financial_data_etl.main_runner --assets NVDA TSLA COST
-
-# Index universes
-python -m financial_data_etl.main_runner --spx          # S&P 500
-python -m financial_data_etl.main_runner --ndx          # Nasdaq 100
-python -m financial_data_etl.main_runner --rut          # Russell 2000
-python -m financial_data_etl.main_runner --dji          # Dow Jones 30
-
-# Combined
 python -m financial_data_etl.main_runner --spx --ndx
-
-# Update catalog with latest index composition
 python -m financial_data_etl.main_runner --spx --update-universe
+
+# Bronze + BigQuery load
+python etl_extract/extract_to_s3.py
+python etl_extract/load_to_bigquery.py
+
+# DBT
+cd financial_dwh
+dbt deps && dbt run && dbt test
+dbt docs generate && dbt docs serve
 ```
 
-### Environment Variables
+### Environment variables
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `DATABASE_URL` | (unset) | `postgresql://...` → PostgreSQL. Absent → SQLite fallback |
-| `POSTGRES_USER` | — | PostgreSQL user (Docker Compose) |
-| `POSTGRES_PASSWORD` | — | PostgreSQL password (Docker Compose) |
-| `POSTGRES_DB` | — | PostgreSQL database name (Docker Compose) |
-| `WS_POOL_SIZE` | 20 | WebSocket connection pool size (TradingView caps at 6) |
-| `SYMBOLS_PER_BATCH` | 1 | Symbols multiplexed per connection per batch cycle |
-| `DEBUG` | (unset) | Set to `1` to bypass CORS + origin checks |
+| `DATABASE_URL` | (unset) | `postgresql://...` → PG; absent → SQLite |
+| `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` | — | Docker Compose PG creds |
+| `GCP_PROJECT` | (unset) | BigQuery project for analytics |
+| `GOOGLE_APPLICATION_CREDENTIALS` | (unset) | Path to GCP service-account key |
+| `WS_POOL_SIZE` | 20 | TradingView WS pool size (capped at 6) |
+| `SYMBOLS_PER_BATCH` | 1 | Symbols per connection per batch cycle |
 | `ALLOWED_ORIGINS` | localhost:3000,5173 | Comma-separated origin whitelist |
-| `LIVE_DEMO_TOKEN` | (unset) | If set, require `?token=xxx` on WS connections |
+| `DEBUG` | (unset) | `1` to bypass CORS + origin checks |
+| `LIVE_DEMO_TOKEN` | (unset) | If set, require `?token=xxx` on WS |
 
 ---
 
@@ -353,34 +440,35 @@ python -m financial_data_etl.main_runner --spx --update-universe
 
 ### Backend (`Dockerfile`)
 
-Multi-stage build (builder → runtime). Single image, two entrypoints:
+Multi-stage `python:3.11-slim` + `libpq5`. Single image, two entrypoints:
 
-| Mode | Command | Equivalent AWS service |
-|------|---------|------------------------|
-| API | `uvicorn financial_data_etl.api.app:app` (default CMD) | ECS Fargate Service (always-on) |
-| ETL | `python -m financial_data_etl.main_runner` (override entrypoint) | ECS Fargate Task (EventBridge/cron) |
+| Mode | Command | AWS equivalent |
+|------|---------|----------------|
+| API | `uvicorn financial_data_etl.api.app:app` (default CMD) | ECS Fargate Service |
+| ETL | `python -m financial_data_etl.main_runner` (override) | ECS Fargate Task (EventBridge-triggered) |
 
-Runtime dependencies: `python:3.11-slim` + `libpq5` (psycopg2). Runs as non-root user `app`.
+Runs as non-root user `app`.
 
 ### Frontend (`frontend/Dockerfile`)
 
-Multi-stage: `node:20-alpine` builds Vite → `nginx:alpine` serves static files (~5MB RAM). In AWS, this container is replaced entirely by S3 + CloudFront.
-
-Build-time args `VITE_API_URL` and `VITE_WS_URL` are baked into the JS bundle at compile time.
+Multi-stage: `node:20-alpine` builds Vite → `nginx:alpine` serves static (~5MB RAM). In AWS, replaced by S3 + CloudFront. Build args `VITE_API_URL` / `VITE_WS_URL` are baked into the bundle at compile time.
 
 ---
 
-## Production Deployment (VPS)
+## Production Deployment (current VPS)
 
 ```
-Nginx (443 SSL) ─→ /financial/       → static React (Vite build)
-                 ─→ /financial-api/  → proxy_pass :9999 (FastAPI REST)
-                 ─→ /ws/             → proxy_pass :9999 (WebSocket upgrade)
+Nginx (443 SSL) ─→ /financial/              → static React build
+                 ─→ /financial-api/          → proxy_pass :9999 (FastAPI REST)
+                 ─→ /financial-api/analytics → proxy_pass :9999 (BigQuery-backed)
+                 ─→ /ws/                     → proxy_pass :9999 (WebSocket upgrade)
 ```
 
-Backend:
+Backend launch:
 ```bash
 DATABASE_URL=postgresql://user:pass@localhost:5432/financial_data \
+GCP_PROJECT=<project> \
+GOOGLE_APPLICATION_CREDENTIALS=/opt/financial/gcp-sa-key.json \
 ALLOWED_ORIGINS=https://yourdomain.com \
   uvicorn financial_data_etl.api.app:app --host 127.0.0.1 --port 9999
 ```
@@ -391,16 +479,28 @@ VITE_API_URL=https://yourdomain.com/financial-api
 VITE_WS_URL=wss://yourdomain.com
 ```
 
-### AWS Target Architecture
+---
 
-Each Docker service maps 1:1 to an AWS managed service:
+## AWS Target Architecture (migration in progress)
 
-| Docker service | AWS service | Notes |
+Each Docker service maps 1:1 to a managed AWS service. Scaffolding lives in `aws/`.
+
+| Local service | AWS service | Status |
 |---|---|---|
-| `postgres` | RDS PostgreSQL (Multi-AZ) | Managed backups, failover |
-| `api` | ECS Fargate Service | Always-on, auto-scaling |
-| `etl` | ECS Fargate Task | Triggered by EventBridge (cron) |
-| `frontend` | S3 + CloudFront | No container needed — static hosting |
-| `pg_data` volume | EBS (via RDS) | Managed by RDS, no manual config |
+| `postgres` | RDS PostgreSQL (Multi-AZ) | ✅ provisioned |
+| `api` | ECS Fargate Service (`aws/ecs/api-task-definition.json`) | 🟡 task def ready, ALB + SSL pending |
+| `etl` | ECS Fargate Task (`aws/ecs/etl-task-definition.json`) | 🟡 triggered by Lambda (`aws/lambda/lambda-etl-trigger.py`) |
+| Bronze export | ECS utility task + S3 bucket (`aws/s3/`) | ✅ scripts working, schedule pending |
+| BigQuery load | Same utility task, Lambda scheduled | 🟡 manual for now |
+| `frontend` | S3 + CloudFront (`aws/cloudfront/`) | 🟡 config ready, cutover pending |
+| CI/CD | GitHub Actions (`aws/github-actions/`) | 🟡 workflows scaffolded |
+
+EventBridge cron triggers the Lambda in `aws/lambda/`, which launches the ETL Fargate task with the appropriate universe from `etl_universe.txt`.
+
+See `apunte_sistema.md` for a narrative walkthrough of every piece of the system.
 
 ---
+
+## Observability
+
+Structured JSON logging via `observability/run_context.py` (stage timers, row counts, errors). In production, logs ship to CloudWatch (AWS) or local files (VPS). DBT emits its own run/test artifacts under `financial_dwh/target/` (gitignored, regenerated by `dbt run`).
