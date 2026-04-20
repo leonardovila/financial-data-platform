@@ -287,6 +287,55 @@ def get_latest_momentum_1d(symbol: str):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# ANALYTICS ENDPOINTS (Gold layer — BigQuery financial_marts)
+#
+# Sirven la "capa de analiticas avanzadas" del front: top anomalias del dia
+# (z_of_z), serie temporal de z-scores, snapshot del universo.
+#
+# La conexion a BQ es lazy (se inicializa en el primer request) asi que el
+# resto del API arranca aunque GOOGLE_APPLICATION_CREDENTIALS no este seteada
+# en este entorno.
+# ══════════════════════════════════════════════════════════════════════════════
+
+from financial_data_etl.api import bq_analytics
+from fastapi import HTTPException
+
+
+@app.get("/analytics/anomalies")
+def analytics_anomalies(metric: str = "rsi_14", limit: int = 10, min_abs_z: float = 1.5):
+    """Top-N simbolos con |z_of_z| mas extremo para una metrica."""
+    try:
+        return bq_analytics.get_top_anomalies(metric=metric, limit=limit, min_abs_z=min_abs_z)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.exception("BQ analytics failed")
+        raise HTTPException(status_code=503, detail=f"analytics backend error: {e}")
+
+
+@app.get("/analytics/zscore-history/{symbol}")
+def analytics_zscore_history(symbol: str, metric: str = "rsi_14", days: int = 252):
+    """Serie temporal de las 3 capas de z-score para (symbol, metric)."""
+    try:
+        return bq_analytics.get_z_score_history(symbol=symbol, metric=metric, days=days)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.exception("BQ analytics failed")
+        raise HTTPException(status_code=503, detail=f"analytics backend error: {e}")
+
+
+@app.get("/analytics/universe")
+def analytics_universe():
+    """Snapshot del universo: counts de outliers por metrica + sectores."""
+    try:
+        return bq_analytics.get_universe_snapshot()
+    except Exception as e:
+        logger.exception("BQ analytics failed")
+        raise HTTPException(status_code=503, detail=f"analytics backend error: {e}")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # MONITORING ENDPOINT (LIVE-08)
 # ══════════════════════════════════════════════════════════════════════════════
 
