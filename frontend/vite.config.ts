@@ -14,6 +14,7 @@ export default defineConfig({
       '/performance': 'http://localhost:8000',
       '/volatility': 'http://localhost:8000',
       '/volume': 'http://localhost:8000',
+      '/analytics': 'http://localhost:8000',
       '/ws': {
         target: 'http://localhost:8000',
         ws: true,

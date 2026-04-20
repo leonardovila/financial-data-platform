@@ -38,6 +38,54 @@ export default function Dashboard() {
         <span>leonardovila.com</span>
       </a>
 
+      {/* ── ROW 0.5: BIG BUTTON al show-off de Analiticas Avanzadas ── */}
+      <a
+        href="/financial/avanzadas"
+        className={[
+          "group relative shrink-0 block no-underline",
+          "px-4 lg:px-6 py-3",
+          "bg-[var(--color-neon)]/8 hover:bg-[var(--color-neon)]/15",
+          "border-b-2 border-[var(--color-neon)]",
+          "transition-colors",
+          "overflow-hidden",
+        ].join(" ")}
+      >
+        <div className="flex items-center justify-between gap-3 flex-wrap">
+          <div className="flex items-center gap-3 min-w-0">
+            <span
+              className={[
+                "inline-flex items-center justify-center",
+                "w-7 h-7 rounded-full",
+                "bg-[var(--color-neon)] text-[var(--color-bg)]",
+                "font-mono font-black text-base",
+                "group-hover:scale-110 transition-transform",
+              ].join(" ")}
+              aria-hidden="true"
+            >
+              σ
+            </span>
+            <div className="min-w-0">
+              <div className="font-mono font-black uppercase tracking-widest text-sm lg:text-base text-[var(--color-neon)]">
+                ver analiticas avanzadas
+              </div>
+              <div className="font-mono text-[10px] lg:text-[11px] uppercase tracking-wider text-[var(--color-muted)] truncate">
+                detector de outliers · z_intra · z_cross · z_of_z · gold layer (bigquery)
+              </div>
+            </div>
+          </div>
+          <span
+            className={[
+              "shrink-0 font-mono font-black text-base lg:text-lg uppercase tracking-widest",
+              "text-[var(--color-neon)]",
+              "group-hover:translate-x-1 transition-transform",
+            ].join(" ")}
+            aria-hidden="true"
+          >
+            entrar &rarr;
+          </span>
+        </div>
+      </a>
+
       <div
         className={[
           "flex-1 min-h-0 w-full overflow-hidden",
