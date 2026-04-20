@@ -1,0 +1,77 @@
+version: 2
+
+models:
+  - name: dim_date
+    description: "Dimensión calendario. date_key INT64 = YYYYMMDD."
+    columns:
+      - name: date_key
+        tests: [not_null, unique]
+      - name: date
+        tests: [not_null, unique]
+      - name: is_trading_day
+        tests: [not_null]
+
+  - name: dim_asset
+    description: "Dimensión de activos. asset_key INT64 = DENSE_RANK(symbol)."
+    columns:
+      - name: asset_key
+        tests: [not_null, unique]
+      - name: symbol
+        tests: [not_null, unique]
+      - name: market_cap_tier
+        tests:
+          - accepted_values:
+              values: [mega, large, mid, small, micro, unknown]
+
+  - name: fact_ohlcv
+    description: "Fact OHLCV diaria. PK (asset_key, date_key). Particionada por mes, clusterizada por asset_key."
+    columns:
+      - name: date_key
+        tests:
+          - not_null
+          - relationships:
+              to: ref('dim_date')
+              field: date_key
+      - name: asset_key
+        tests:
+          - not_null
+          - relationships:
+              to: ref('dim_asset')
+              field: asset_key
+      - name: close
+        tests: [not_null]
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns: [asset_key, date_key]
+
+  - name: fact_derived_metrics
+    description: >
+      Fact de señales: crudas + z_intra + z_cross + z_of_z por (asset_key, date_key).
+      Es la tabla que el front query-ea para detectar anomalías.
+    columns:
+      - name: date_key
+        tests:
+          - not_null
+          - relationships: { to: ref('dim_date'),  field: date_key  }
+      - name: asset_key
+        tests:
+          - not_null
+          - relationships: { to: ref('dim_asset'), field: asset_key }
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns: [asset_key, date_key]
+
+  - name: fact_fundamentals
+    description: "Fact fundamentals forward-filled al date spine. PK (asset_key, date_key)."
+    columns:
+      - name: date_key
+        tests:
+          - not_null
+          - relationships: { to: ref('dim_date'),  field: date_key  }
+      - name: asset_key
+        tests:
+          - not_null
+          - relationships: { to: ref('dim_asset'), field: asset_key }
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns: [asset_key, date_key]

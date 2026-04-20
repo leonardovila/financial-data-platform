@@ -43,3 +43,8 @@ Thumbs.db
 # GCP Service Account keys — NEVER commit, always via Secrets Manager
 *-sa-key.json
 gcp/**/*-key.json
+
+# DBT artifacts — regenerados por `dbt deps` / `dbt run`, no van al repo
+financial_dwh/target/
+financial_dwh/dbt_packages/
+financial_dwh/logs/

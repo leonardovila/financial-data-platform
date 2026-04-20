@@ -1,0 +1,70 @@
+version: 2
+
+models:
+  - name: stg_tv_candles
+    description: "OHLCV diaria, dedupeada por (symbol, date), tipos NUMERIC."
+    columns:
+      - name: symbol
+        tests: [not_null]
+      - name: date
+        tests: [not_null]
+      - name: close
+        tests: [not_null]
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns: [symbol, date]
+
+  - name: stg_volatility
+    description: "Vol annualized rolling (1w..1y) + range_intraday."
+    columns:
+      - { name: symbol, tests: [not_null] }
+      - { name: date,   tests: [not_null] }
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns: [symbol, date]
+
+  - name: stg_performance
+    description: "Trailing returns (1d..1y)."
+    columns:
+      - { name: symbol, tests: [not_null] }
+      - { name: date,   tests: [not_null] }
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns: [symbol, date]
+
+  - name: stg_momentum
+    description: "RSI Wilder + SMA gaps + Donchian high distance."
+    columns:
+      - { name: symbol, tests: [not_null] }
+      - { name: date,   tests: [not_null] }
+      - name: rsi_14
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 100
+              inclusive: true
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns: [symbol, date]
+
+  - name: stg_fundamentals
+    description: "Snapshot fundamentals por (symbol, as_of_ts)."
+    columns:
+      - { name: symbol,   tests: [not_null] }
+      - { name: as_of_ts, tests: [not_null] }
+
+  - name: stg_assets
+    description: "Universo de activos. Fuente única de verdad de qué símbolos existen."
+    columns:
+      - name: symbol
+        tests: [not_null, unique]
+      - name: market_cap_tier
+        tests:
+          - accepted_values:
+              values: [mega, large, mid, small, micro, unknown]
+
+  - name: stg_dates
+    description: "Date spine desde min(date) hasta hoy."
+    columns:
+      - name: date
+        tests: [not_null, unique]

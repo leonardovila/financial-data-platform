@@ -1,0 +1,41 @@
+# Financial DWH — DBT project config
+#
+# Materialization strategy:
+#   staging/      → view (zero storage cost, recomputes always — basic cleaning)
+#   intermediate/ → view (compute layer — z-scores, z-of-z, joins)
+#   marts/        → table (physical, fast reads — star schema for the front)
+#
+# Datasets (BigQuery):
+#   bronze  → financial_raw      (loaded by etl_extract/load_to_bigquery.py)
+#   silver  → financial_staging  (staging + intermediate, default target)
+#   gold    → financial_marts    (marts — Kimball star schema)
+
+name: 'financial_dwh'
+version: '1.0.0'
+config-version: 2
+
+profile: 'financial_dwh'
+
+model-paths: ["models"]
+analysis-paths: ["analyses"]
+test-paths: ["tests"]
+seed-paths: ["seeds"]
+macro-paths: ["macros"]
+snapshot-paths: ["snapshots"]
+
+target-path: "target"
+clean-targets:
+  - "target"
+  - "dbt_packages"
+
+models:
+  financial_dwh:
+    staging:
+      +materialized: view
+      +schema: staging
+    intermediate:
+      +materialized: view
+      +schema: staging
+    marts:
+      +materialized: table
+      +schema: marts

@@ -1,0 +1,66 @@
+version: 2
+
+# Bronze sources — landing zone tables loaded from RDS by
+# etl_extract/load_to_bigquery.py. Schema-on-read; no FKs, no constraints.
+# Silver / gold NEVER read raw; they always go through staging models below.
+
+sources:
+  - name: bronze
+    database: financial-data-etl
+    schema: financial_raw
+    description: >
+      Bronze layer — raw RDS export. One table per source domain.
+      Snapshot count (2026-04-17): 1,220,466 rows total.
+    loaded_at_field: ingested_at
+    freshness:
+      warn_after: { count: 36, period: hour }
+      error_after: { count: 72, period: hour }
+
+    tables:
+      - name: raw_tv_candles
+        description: "OHLCV daily bars from TradingView. ~305k rows, 48 symbols, 1994-06-13 → today."
+        columns:
+          - name: symbol
+            tests: [not_null]
+          - name: date
+            tests: [not_null]
+          - name: ts
+            tests: [not_null]
+          - name: open
+          - name: high
+          - name: low
+          - name: close
+          - name: volume
+
+      - name: raw_volatility
+        description: "Rolling realized vol (1w, 1m, 3m, 6m, 1y) annualized + intraday range. ~305k rows after backfill."
+        columns:
+          - name: symbol
+            tests: [not_null]
+          - name: date
+            tests: [not_null]
+
+      - name: raw_performance
+        description: "Trailing returns (1d, 1w, 1m, 3m, 6m, 1y). ~305k rows after backfill."
+        columns:
+          - name: symbol
+            tests: [not_null]
+          - name: date
+            tests: [not_null]
+
+      - name: raw_momentum
+        description: "RSI(14) Wilder + SMA gaps (20/50/200) + Donchian high distance (1m, 1y). ~305k rows."
+        columns:
+          - name: symbol
+            tests: [not_null]
+          - name: date
+            tests: [not_null]
+
+      - name: raw_fundamentals
+        description: "Snapshot fundamentals: market cap, P/E TTM, EPS TTM, shares, sector, industry. 430 rows."
+        loaded_at_field: as_of_ts
+        columns:
+          - name: symbol
+            tests: [not_null]
+          - name: as_of_ts
+            tests: [not_null]

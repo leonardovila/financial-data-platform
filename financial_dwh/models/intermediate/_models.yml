@@ -1,0 +1,35 @@
+version: 2
+
+models:
+  - name: int_asset_daily
+    description: "Fact gordo: una fila por (symbol, date) con OHLCV + vol + perf + momentum joineados."
+    columns:
+      - { name: symbol, tests: [not_null] }
+      - { name: date,   tests: [not_null] }
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns: [symbol, date]
+
+  - name: int_intra_asset_zscores
+    description: "Z-scores rolling 252d intra-asset. Normaliza la métrica vs la propia historia."
+    columns:
+      - { name: symbol, tests: [not_null] }
+      - { name: date,   tests: [not_null] }
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns: [symbol, date]
+
+  - name: int_cross_asset_zscores
+    description: "Z-scores cross-section: snapshot diario, métrica vs el universo del día."
+    columns:
+      - { name: symbol, tests: [not_null] }
+      - { name: date,   tests: [not_null] }
+
+  - name: int_z_of_z
+    description: "Z-of-z: anomalía dentro de anomalía. Z-score de z_intra contra el universo del día."
+    columns:
+      - { name: symbol, tests: [not_null] }
+      - { name: date,   tests: [not_null] }
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns: [symbol, date]
