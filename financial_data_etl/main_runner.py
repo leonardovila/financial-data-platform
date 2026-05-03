@@ -224,8 +224,13 @@ def main(argv: Optional[List[str]] = None) -> int:
                     with ctx.span("derived_momentum_1d", symbols=len(derived_symbols)):
                         run_momentum_1d(derived_symbols, ctx=ctx)
 
-                # Disparamos los 3 cálculos de Pandas al mismo tiempo usando los hilos de la CPU
-                with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+                # Serializamos los 3 derivados (max_workers=1 en lugar de 3).
+                # Cada derivado carga toda la historia del símbolo en pandas
+                # (~500 MB pico para 744 símbolos × 4500 velas). Si los
+                # corremos los 3 en paralelo el task pasa de 1.5 GB y se va
+                # de mambo en una task chica. Serializados el pico queda
+                # acotado al más grande de uno solo.
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
                     futures = [
                         executor.submit(_run_perf),
                         executor.submit(_run_volat),
