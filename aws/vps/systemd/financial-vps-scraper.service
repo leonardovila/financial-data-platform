@@ -1,0 +1,31 @@
+[Unit]
+Description=Financial VPS scraper - daily one-shot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/root/financial-system
+# API endpoint exposed by the ALB and bearer token from local file
+Environment=VPS_API_BASE_URL=https://api.leonardovila.com
+Environment=VPS_API_TOKEN_FILE=/etc/financial-data/api-token
+# S3 raw destination
+Environment=VPS_S3_BUCKET=leonardovila-financial-raw
+Environment=VPS_S3_PREFIX=raw/tv
+# Throttling: chunks of 50 symbols, sleep 50s between chunks
+Environment=VPS_CHUNK_SIZE=50
+Environment=VPS_CHUNK_SLEEP_SECONDS=50
+Environment=VPS_TIMEFRAME=1d
+# WS multiplexing config (10 conns x 5 symbols/conn = 50 in flight per chunk)
+Environment=WS_POOL_SIZE=10
+Environment=SYMBOLS_PER_BATCH=5
+# AWS creds (profile lives in /root/.aws/credentials)
+Environment=AWS_PROFILE=vps-scraper
+Environment=AWS_REGION=us-east-2
+ExecStart=/root/financial-system/.venv/bin/python -m financial_data_etl.vps_scraper.runner
+StandardOutput=append:/var/log/financial-vps-scraper.log
+StandardError=append:/var/log/financial-vps-scraper.log
+TimeoutStartSec=3600
+
+[Install]
+WantedBy=multi-user.target

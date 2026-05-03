@@ -366,7 +366,25 @@ pyproject.toml                                       ← +boto3
 
 ---
 
-## 9. Validación técnica (qué tiene que pasar para considerarlo OK)
+## 9. Hotfixes que aparecieron en el primer run real (post-deploy)
+
+Documentados acá para que entren en la chuleta de la entrevista — son los típicos "lo que NO está en el plan" que un revisor pregunta.
+
+### 9.1 `WebSocketException 1009 — message too big`
+- **Síntoma:** todos los batches del primer chunk caían inmediatamente con el cierre 1009.
+- **Causa raíz:** la librería `websockets` de Python tiene `max_size=1MB` por default. Pedimos 4500 velas × 5 símbolos por batch + multiplexed quote frames → la respuesta de TradingView pasa fácil 1MB. TV cierra la conexión, el batch se reencola, vuelve a fallar, todos los símbolos van a `failures`.
+- **Fix:** `max_size=50 * 1024 * 1024` en `websockets.connect()` dentro de `connect_to_tradingview` ([tradingview_ws.py](financial_data_etl/scraping_pipeline/tv_websocket_connection/call_execution/tradingview_ws.py)). 50 MB da margen para `SYMBOLS_PER_BATCH` hasta ~20 incluso en bootstrap.
+- **Lección:** los defaults de las librerías son conservadores. Cuando un componente "anda bien en pruebas chicas pero falla en producción", el primer sospechoso son los límites de tamaño del transporte.
+
+### 9.2 `BOOTSTRAP_BARS = 8000` (más que las 4500 del seed del front)
+- **Síntoma:** durante el primer run los símbolos en bootstrap recibían ~8000 velas, pero el front solo sirve 4500.
+- **Causa raíz:** `increment_planner.BOOTSTRAP_BARS` quedó en 8000 desde antes del sprint. Sobre-ingestaba.
+- **Fix:** `BOOTSTRAP_BARS = 4500` ([increment_planner.py](financial_data_etl/storage/increment_planner.py)). Match exacto con `live_seed.load_historical_seed`.
+- **Lección:** mantener consistentes las constantes de "cuánto historico cargar" entre planner / store / front evita escribir velas que nadie va a leer.
+
+---
+
+## 10. Validación técnica (qué tiene que pasar para considerarlo OK)
 
 | # | Check | Cómo verificar | Esperado |
 |---|---|---|---|
