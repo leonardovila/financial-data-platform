@@ -382,9 +382,51 @@ Documentados acá para que entren en la chuleta de la entrevista — son los tí
 - **Fix:** `BOOTSTRAP_BARS = 4500` ([increment_planner.py](financial_data_etl/storage/increment_planner.py)). Match exacto con `live_seed.load_historical_seed`.
 - **Lección:** mantener consistentes las constantes de "cuánto historico cargar" entre planner / store / front evita escribir velas que nadie va a leer.
 
+### 9.3 `ResourceInitializationError` al pullear el secret nuevo
+- **Síntoma:** la nueva task definition (con `INTERNAL_API_TOKEN` agregado a `secrets`) no levantaba; CloudWatch mostraba "is not authorized to perform: secretsmanager:GetSecretValue".
+- **Causa raíz:** los `secrets` de la task se pullean con el **execution role** (no el task role). Yo había attacheado la policy de secrets al `financial-etl-task-role` (taskRoleArn) pero no al `ecsTaskExecutionRole` (executionRoleArn), que es el que pullea ANTES de levantar el container.
+- **Fix:** inline policy `read-financial-data-secrets` sobre `ecsTaskExecutionRole` con `secretsmanager:GetSecretValue` sobre `arn:...:secret:financial-data/*`.
+- **Lección:** dos roles distintos en una task ECS — task role para lo que el container hace en runtime, execution role para lo que ECS hace antes de arrancar. Los secrets son responsabilidad del execution role.
+
+### 9.4 `ValueError: No universe specified` (la Lambda lanza la task sin --spx)
+- **Síntoma:** la task disparada por la Lambda terminaba con exit 1 y error en `resolve_and_cache_universe`.
+- **Causa raíz:** mi fork `if _use_vps_raw():` estaba en el paso 3 del flujo, pero el paso 1 (`resolve_and_cache_universe`) corría siempre y exigía argumentos CLI (`--spx`, `--ndx`, `--assets`). La Lambda lanza la task con override solo de env vars, sin args.
+- **Fix:** mover el branch `use_vps_raw` al inicio de `main()`. En modo VPS-raw se saltea universe + plan resolution (consumidos solo por el live scraper).
+- **Lección:** los puntos de bifurcación deben respetar las pre-condiciones de cada path. El fork tiene que ir antes de cualquier paso que solo aplique a un camino.
+
+### 9.5 OOM por cargar 744 bodies en memoria (workaround → fix real)
+- **Síntoma:** la task moría con `exit 137 (SIGKILL)` durante `read_raw_from_s3`.
+- **Workaround inicial:** subir la task a 1 vCPU / 4 GB RAM. Funcionó pero rompía el principio "pago por lo que uso" — el incremental real necesita ~50 MB.
+- **Fix real:** refactor a streaming. `stream_raw_batches_from_s3` es un generator que yieldea dicts de hasta `batch_size=50` símbolos. `main_runner` itera, persiste, descarta. Memoria pico: ~50 MB en vez de ~3 GB.
+- **Lección:** "subir el sizing" es el peor fix posible — quita la presión que te haría descubrir el verdadero problema. El primer instinto debe ser "¿por qué este componente come tanta memoria?", no "¿cuánta memoria le doy?".
+
+### 9.6 OOM en derivados (3 runners pandas-pesados en paralelo)
+- **Síntoma:** después del fix de streaming la task seguía muriendo SIGKILL — pero ahora durante `derived_metrics`.
+- **Causa raíz:** los 3 runners (price_performance, volatility, momentum) corrían en paralelo via `ThreadPoolExecutor(max_workers=3)`. Cada uno carga toda la historia de los 744 símbolos en pandas — ~500 MB pico cada uno. 3 simultáneos = ~1.5 GB.
+- **Fix:** `max_workers=1` (serializar). Cada runner corre uno a la vez, pico de memoria = el más grande de uno solo. Tiempo total: 117s (vs ~73s en paralelo, 60% más lento, aceptable).
+- **Sizing final:** task ECS a `cpu=512, memory=1024`. 4x menos que el workaround de 4GB, suficiente para el peor caso (bootstrap completo + derivados serializados).
+- **Lección:** la paralelización agrega memoria proporcional al grado de paralelismo. Cuando el pipeline es memory-bound, serializar suele ser el ajuste correcto.
+
 ---
 
-## 10. Validación técnica (qué tiene que pasar para considerarlo OK)
+## 10. Setup definitivo post-cutover
+
+| Componente | Configuración final | Costo aproximado |
+|---|---|---|
+| ECS task `financial-data-etl:8` | cpu=512 (0.5 vCPU), memory=1024 MB | ~$0.04 / corrida × 5/sem ≈ $0.80/mes |
+| Lambda `s3-done-trigger` | Python 3.11, 256 MB, ~1s por invocación | <$0.01/mes |
+| S3 `leonardovila-financial-raw/raw/tv/*` | ~14 MB/run (bootstrap), ~500 KB/run (incremental) | <$0.01/mes |
+| EventBridge `financial-etl-daily` | **DISABLED** — reemplazado por systemd timer del VPS | $0 |
+| systemd timer en VPS | Mon..Fri 21:00 UTC, lockfile flock anti-overlap | $0 (VPS ya pago) |
+
+**Schedule efectivo desde 2026-05-03:**
+- 21:00 UTC lun-vie → VPS scrapea → sube a S3 → marker dispara Lambda → Lambda lanza Fargate task → 12 min después la base está actualizada y los derivados recomputados.
+- Bootstrap (un símbolo nuevo por primera vez): peak load. Ya validado: 12 min total, 1 GB RAM pico.
+- Incremental (caso normal post-cutover): solo 1-5 velas por símbolo. Estimado <2 min de Fargate.
+
+---
+
+## 11. Validación técnica (qué tiene que pasar para considerarlo OK)
 
 | # | Check | Cómo verificar | Esperado |
 |---|---|---|---|

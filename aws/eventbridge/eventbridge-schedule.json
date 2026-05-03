@@ -11,5 +11,5 @@
     "RoleArn": "arn:aws:iam::295933007543:role/EventBridgeSchedulerRole",
     "Input": "{}"
   },
-  "State": "ENABLED"
+  "State": "DISABLED"
 }
