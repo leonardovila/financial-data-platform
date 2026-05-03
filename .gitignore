@@ -11,6 +11,9 @@ __pycache__/
 *vps_info.md
 *response.json
 *inspect_rds.py
+*apunte_sistema.md
+*bronze_showcase.py
+*example.sql
 
 # Build / packaging artifacts
 financial_data_etl.egg-info/
@@ -18,6 +21,7 @@ build/
 dist/
 ignorar/
 nginx_vps_info/
+infra/
 
 # Transient PR body scratch files (used with `gh pr create --body-file`)
 .github/pr_body_*.md
