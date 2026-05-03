@@ -1,155 +1,126 @@
-# README-INGEST · Ingesta y cómputo del primer set de métricas en RDS
+# README-INGEST · Pipeline de ingesta y cómputo de derivados sobre RDS
 
-> Fuente de verdad de cómo funciona la ingesta y el cómputo de derivados
-> sobre RDS PostgreSQL. **No incluye dbt / BigQuery / analíticas avanzadas**
-> (eso es otra capa, posterior a este flujo).
-
----
-
-## 1. Por qué este sprint existió
-
-El scrape de TradingView corría dentro del task de ECS Fargate (`financial-data-etl`).
-TradingView bloquea por IP reputation a los rangos de AWS, así que la mayoría
-de los símbolos del catálogo fallaban: en el RDS había **~95 símbolos cargados de un
-catálogo de 2000+**. El task estaba pagando cómputo y networking para que un
-anti-bot le cerrara la conexión.
-
-Aparte, `main_runner.py` mezclaba 5 responsabilidades en el mismo proceso:
-plan incremental, scrape, parse, persistencia y derivados. Cualquier cambio era
-peligroso y opaco para una entrevista.
-
-**Decisión arquitectónica:** desacoplar el **scrape** del **procesamiento**.
-- El **scrape** baja al **VPS** (Digital Ocean), que tiene IP residencial y
-  TradingView no le pega.
-- El **procesamiento** sigue en **ECS Fargate**, exactamente lo que ya hacía
-  (parse → persist → derivados), pero ahora alimentado desde **S3** en
-  lugar de desde el WS en vivo.
-- La comunicación VPS ↔ cloud se da por **dos canales únicos**:
-  1. **HTTPS** vía ALB → API en Fargate → endpoint `/internal/increment-plan`
-     autenticado por bearer token. El VPS pide el plan (qué velas faltan
-     por símbolo) y la API consulta el RDS por él.
-  2. **S3 PutObject** vía credenciales IAM acotadas (sólo `PutObject` bajo
-     `raw/tv/*`).
-- **El RDS sigue 100% privado** — el VPS jamás abre conexión Postgres directa.
+Documentación técnica del flujo de scrape → S3 → procesamiento → RDS.
+**Fuera de scope:** dbt, BigQuery, analíticas avanzadas (capa posterior).
 
 ---
 
-## 2. Diagrama del flujo
+## 1. Arquitectura
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
-│                       VPS (Digital Ocean — IP residencial)               │
-│                                                                          │
-│ systemd timer (a futuro 21:00 UTC lun-vie)                               │
-│   ├─ python -m financial_data_etl.vps_scraper.runner                     │
-│   │                                                                      │
-│   ├─ 1. lockfile (flock) anti-overlap                                    │
-│   ├─ 2. lee catalog_seed.txt (746 tickers SPX+NDX+RUT deduplicados)      │
-│   ├─ 3. valida contra catalog.json (provider_symbol tradingview)         │
-│   ├─ 4. POST https://<alb>/internal/increment-plan                       │
-│   │      Authorization: Bearer <token>                                   │
-│   │      body: {"symbols": [...], "timeframe": "1d"}                     │
-│   │      ─────────────────────────────────────────────┐                  │
-│   │      ◄── {"plan": {"AAPL": 1, "RKLB": 8000, ...}} │                  │
-│   │                                                   │                  │
-│   ├─ 5. para cada chunk de 50 (sleep 50s entre chunks):                  │
-│   │      run_tv_websocket_scraper(plan, raw_capture=…)                   │
-│   │      el callback raw_capture acumula los chunks WS por símbolo       │
-│   │      en memoria (no parsea — eso lo hace Fargate)                    │
-│   │      sube data.jsonl.gz por símbolo a S3                             │
-│   │                                                   │                  │
-│   └─ 6. al terminar TODOS los chunks: sube _DONE_{date}.txt              │
-└──────────────────────────────────────────────────────┼───────────────────┘
-                                                       │ S3 PutObject
-                                                       ▼
-┌──────────────────────────────────────────────────────────────────────────┐
-│ S3: leonardovila-financial-raw                                           │
-│   raw/tv/symbol={SYM}/ingestion_date=YYYY-MM-DD/data.jsonl.gz   ← x N    │
-│   raw/tv/_DONE_{ingestion_date}.txt                              ← marker│
-└──────────────────────────────────────────────────────┼───────────────────┘
-                                                       │ S3 Event
-                                                       │ filter: prefix=raw/tv/_DONE_
-                                                       │         suffix=.txt
-                                                       ▼
-                                       ┌─────────────────────────┐
-                                       │ Lambda s3-done-trigger  │
-                                       │ parsea ingestion_date   │
-                                       │ ecs.run_task con env:   │
-                                       │   USE_VPS_RAW=true      │
-                                       │   INGESTION_DATE=YYYY-… │
-                                       └────────────┬────────────┘
-                                                    │ ECS RunTask
-                                                    ▼
-┌──────────────────────────────────────────────────────────────────────────┐
-│ ECS Fargate task: financial-data-etl (revision 5)                        │
-│   python -m financial_data_etl.main_runner                               │
-│     ── USE_VPS_RAW=true → fork hacia raw_s3_reader                       │
-│     1️⃣ resolve_universe (sin scrape)                                     │
-│     2️⃣ build_increment_plan (idempotencia defensiva en upsert)           │
-│     3️⃣ read_raw_from_s3(bucket, prefix, ingestion_date) ◄── S3 GetObject│
-│         lista raw/tv/symbol=*/ingestion_date={date}/data.jsonl.gz        │
-│         por símbolo: gunzip + parse (parse_ohlcv + extract_fundamentals) │
-│         devuelve {symbol: body} con el MISMO shape que el scraper        │
-│     4️⃣ persist_ohlcv_base()             ──► RDS tv_candles_raw          │
-│     5️⃣ persist_fundamentals_snapshot()  ──► RDS fundamentals_snapshot   │
-│     6️⃣ run_price_performance_1d()       ──► RDS performance_1d          │
-│        run_volatility_1d()                ──► RDS volatility_1d          │
-│        run_momentum_1d()                  ──► RDS momentum_1d            │
-└──────────────────────────────────────────────────────────────────────────┘
-                                                    │
-                                                    ▼
-                                       ┌─────────────────────────┐
-                                       │ RDS PostgreSQL          │
-                                       │ (privada en VPC)        │
-                                       └─────────────────────────┘
-                                                    │
-                                                    ▼
-                                       Frontend → API → /symbols, /ohlcv,
-                                                       /fundamentals,
-                                                       /performance/1d/X,
-                                                       /volatility/1d/X,
-                                                       /momentum/1d/X
+│                  VPS Digital Ocean (forge-api-nyc)                        │
+│                  IP residencial — TradingView no la bloquea               │
+│                                                                           │
+│  systemd timer (Mon..Fri 21:00 UTC)                                       │
+│      │                                                                    │
+│      ▼                                                                    │
+│  python -m financial_data_etl.vps_scraper.runner                          │
+│      │                                                                    │
+│      │ 1. flock /var/run/financial-vps-scraper.lock (anti-overlap)        │
+│      │ 2. lee universe/storage/catalog_seed.txt (747 tickers)             │
+│      │ 3. valida cada ticker contra catalog.json (provider_symbol.tradingview)│
+│      │ 4. POST /internal/increment-plan ───────────┐                      │
+│      │     Authorization: Bearer <token>            │                      │
+│      │     body: {"symbols":[...], "timeframe":"1d"}│                      │
+│      │     ◄── {"plan": {"AAPL": 1, "RKLB": 4500}} │                      │
+│      │ 5. for chunk in chunks(plan, size=50):     │                      │
+│      │       run_tv_websocket_scraper(chunk_plan, raw_capture=cb)         │
+│      │       cb acumula los WS chunks por símbolo en memoria              │
+│      │       sube data.jsonl.gz por símbolo a S3                          │
+│      │       sleep 50s                                                    │
+│      │ 6. al terminar todos los chunks:                                   │
+│      │       sube _DONE_{ingestion_date}.txt                              │
+└──────┼─────────────────────────────────────────────┼──────────────────────┘
+       │                                             │ HTTPS
+       │ S3 PutObject                                ▼
+       ▼                                  ┌──────────────────────┐
+┌──────────────────────────────────────┐  │ ALB                  │
+│ S3 leonardovila-financial-raw        │  │  └─► API ECS Fargate │
+│ raw/tv/symbol={SYM}/                 │  │       financial-data-api │
+│   ingestion_date=YYYY-MM-DD/         │  │       (FastAPI)      │
+│   data.jsonl.gz              × 747   │  │       /internal/     │
+│ raw/tv/_DONE_YYYY-MM-DD.txt          │  │       increment-plan │
+└──────────────────────────────────────┘  └──────────┬───────────┘
+       │                                             │ build_increment_plan()
+       │ S3 Event                                    ▼
+       │ filter: prefix=raw/tv/_DONE_                ┌──────────────┐
+       │         suffix=.txt                         │ RDS Postgres │◄─┐
+       ▼                                             │ (VPC privada)│  │
+┌──────────────────────────┐                         └──────────────┘  │
+│ Lambda s3-done-trigger   │                                           │
+│ ecs.run_task             │                                           │
+│   INGESTION_DATE=YYYY-…  │                                           │
+└────────────┬─────────────┘                                           │
+             │ ECS RunTask                                              │
+             ▼                                                          │
+┌─────────────────────────────────────────────────────────────────────┐ │
+│ ECS Fargate task financial-data-etl (cpu=512, memory=1024)          │ │
+│ python -m financial_data_etl.main_runner                            │ │
+│                                                                     │ │
+│   stream_raw_batches_from_s3(batch_size=50)                         │ │
+│     ├─ download data.jsonl.gz por símbolo                           │ │
+│     ├─ parse_ohlcv + extract_fundamentals_from_quote_raw            │ │
+│     └─ yield {symbol: body} batch                                   │ │
+│   for batch in stream:                                              │ │
+│     ├─ persist_ohlcv_base(batch)         ─► RDS tv_candles_raw     ─┼─┘
+│     └─ persist_fundamentals_snapshot(batch) ─► fundamentals_snapshot│
+│                                                                     │
+│   for runner in (price_performance, volatility, momentum):          │
+│     run_*_1d(symbols)         ─► RDS performance_1d / volatility_1d │
+│                                                  / momentum_1d      │
+└─────────────────────────────────────────────────────────────────────┘
+                                  │
+                                  ▼
+                        Frontend (leonardovila.com)
+                          ─► API REST endpoints
+                              /symbols
+                              /ohlcv/history/{symbol}
+                              /fundamentals/{symbol}
+                              /performance/1d/{symbol}
+                              /volatility/1d/{symbol}
+                              /momentum/1d/{symbol}
 ```
 
----
+**Reglas de la frontera VPS ↔ cloud:**
 
-## 3. Catálogo
-
-- Universo: unión de SPX (S&P 500) + NDX (Nasdaq 100) + top-200 RUT (Russell 2000).
-- 746 tickers únicos tras deduplicar (overlap SPX↔NDX = 87, SPX↔RUT = 1, NDX↔RUT = 0).
-- Archivo plano: `financial_data_etl/universe/storage/catalog_seed.txt` (un ticker por línea).
-- Resolución de TradingView: `financial_data_etl/catalog.json` mapea `ticker → {provider_symbol: {tradingview: "EXCHANGE:TICKER"}}`. **Para llamar al WS de TradingView no basta con el ticker — hay que mandar `EXCHANGE:TICKER` (ej. `NASDAQ:AAPL`)**. El VPS valida cada ticker del seed contra el catalog antes de scrapear, y los que no tengan `provider_symbol.tradingview` se loggean como WARNING y se saltean.
-- En este sprint se agregaron 4 tickers que faltaban (`CASY`, `COHR`, `LITE`, `VRT`).
+- VPS solo se comunica con AWS por dos canales: HTTPS al ALB (con bearer token) y `s3:PutObject` con un IAM user limitado al prefix `raw/tv/*`.
+- VPS jamás abre conexión Postgres al RDS.
+- RDS está en subnet privada de la VPC. Solo el security group de ECS puede llegar.
 
 ---
 
-## 4. Componentes nuevos (este sprint)
+## 2. Catálogo
 
-### 4.1 VPS scraper — `financial_data_etl/vps_scraper/`
+- 747 tickers únicos: SPX (S&P 500) ∪ NDX (Nasdaq 100) ∪ top-200 RUT (Russell 2000) + BTC.
+- Archivo plano: [`financial_data_etl/universe/storage/catalog_seed.txt`](financial_data_etl/universe/storage/catalog_seed.txt) (un ticker por línea).
+- Resolución de TradingView: [`financial_data_etl/catalog.json`](financial_data_etl/catalog.json) mapea `ticker → {provider_symbol: {tradingview: "EXCHANGE:TICKER"}}`. El WS de TradingView requiere el formato `EXCHANGE:TICKER` (ej. `NASDAQ:AAPL`, `BINANCE:BTCUSDT`).
+- El VPS valida cada ticker del seed contra el catalog antes de scrapear; los que no tengan `provider_symbol.tradingview` se loggean como WARN y se saltean.
 
-Módulo Python instalado en el VPS junto con el resto del paquete.
+---
+
+## 3. Componentes
+
+### 3.1 VPS scraper — `financial_data_etl/vps_scraper/`
 
 | Archivo | Rol |
 |---|---|
-| `runner.py` | Entrypoint: `python -m financial_data_etl.vps_scraper.runner`. Orquesta lockfile → seed → validación → API → scrape chunked → marker. |
-| `chunk_orchestrator.py` | Loop por chunks de 50 con sleep 50s. Inyecta el callback `raw_capture` al scraper, acumula chunks WS por símbolo en memoria, sube uno por símbolo a S3. |
+| `runner.py` | Entrypoint. Orquesta lockfile → seed → API plan → chunked scrape → marker. |
+| `chunk_orchestrator.py` | Loop de chunks de 50 con `sleep 50s`. Inyecta el callback `raw_capture` al scraper, acumula chunks WS por símbolo en memoria, sube uno por símbolo a S3. |
 | `api_client.py` | Cliente HTTP del endpoint `/internal/increment-plan`. |
 | `s3_uploader.py` | `boto3.put_object` para los `data.jsonl.gz` y para el marker. |
 | `lockfile.py` | `fcntl.flock` anti-overlap (no-op en Windows para tests locales). |
-| `config.py` | Config desde env vars (`VPS_API_BASE_URL`, `VPS_API_TOKEN_FILE`, `VPS_S3_BUCKET`, `VPS_S3_PREFIX`, `VPS_CHUNK_SIZE`, `VPS_CHUNK_SLEEP_SECONDS`, etc.). |
+| `config.py` | Config desde env vars (`VPS_API_BASE_URL`, `VPS_API_TOKEN_FILE`, `VPS_S3_BUCKET`, `VPS_S3_PREFIX`, `VPS_CHUNK_SIZE`, `VPS_CHUNK_SLEEP_SECONDS`). |
 
-### 4.2 Hook `raw_capture` en el WS scraper existente
+### 3.2 Hook `raw_capture` en el scraper de WebSocket
 
-Modificación mínima invasiva en `financial_data_etl/scraping_pipeline/tv_websocket_connection/call_execution/tradingview_ws.py::request_batch_multiplexed`:
+[`tradingview_ws.py::request_batch_multiplexed`](financial_data_etl/scraping_pipeline/tv_websocket_connection/call_execution/tradingview_ws.py) acepta un parámetro opcional `raw_capture: Optional[Callable[[str, str], None]]`. Cuando está seteado, antes de parsear cada chunk WS routeable a un símbolo conocido invoca `raw_capture(provider_symbol, raw_chunk_str)`. El callback se propaga por `tv_websocket_scraper.py` (3 funciones).
 
-- Nuevo parámetro opcional `raw_capture: Optional[Callable[[str, str], None]] = None`.
-- Dentro del loop receive, antes del routing/parsing existente, si el callback está presente y el chunk se puede mapear a un símbolo conocido (vía `chart_route` o `quote_route`), se invoca `raw_capture(provider_symbol, raw_chunk_str)`.
-- El callback se propaga por `tv_websocket_scraper.py` (3 funciones: `run_tv_websocket_scraper` → `_run_pool` → `_pool_worker` → `request_batch_multiplexed`).
-- **Cuando el callback no se pasa (Fargate en modo legacy o en modo procesador) el comportamiento es 100% idéntico al original.**
+El VPS lo setea para volcar los chunks a JSONL.gz **sin parsear localmente**. Cuando no se pasa el callback, el comportamiento del scraper es 100% idéntico al original.
 
-### 4.3 Endpoint `/internal/increment-plan` en `app.py`
+### 3.3 Endpoint `/internal/increment-plan`
 
-`POST https://<alb>/internal/increment-plan`
+`POST https://api.leonardovila.com/internal/increment-plan`
 
 ```http
 Authorization: Bearer <token>
@@ -161,280 +132,149 @@ Content-Type: application/json
 Respuesta:
 
 ```json
-{"plan": {"AAPL": 1, "MSFT": 1, "RKLB": 8000, ...}}
+{"plan": {"AAPL": 1, "MSFT": 1, "RKLB": 4500}}
 ```
 
-- Auth bearer-token, token en `INTERNAL_API_TOKEN` (env, leído al boot del task desde Secrets Manager `financial-data/internal-api-token-4QMQ9b`).
-- Llama internamente al mismo `build_increment_plan()` que ya usa el ETL (`financial_data_etl/storage/increment_planner.py`).
-- Filtra los símbolos con `n=0` (ya están al día) — el VPS ni intenta scrapear esos.
+Token leído de la env var `INTERNAL_API_TOKEN` (Secrets Manager `financial-data/internal-api-token-*`). Internamente llama a `build_increment_plan()` del [`increment_planner.py`](financial_data_etl/storage/increment_planner.py); filtra `n=0` antes de devolver.
 
-### 4.4 Helper `read_raw_from_s3` — `financial_data_etl/storage/raw_s3_reader.py`
+### 3.4 Lambda `s3-done-trigger`
 
-- Lista `s3://leonardovila-financial-raw/raw/tv/symbol=*/ingestion_date={date}/data.jsonl.gz`.
-- Por símbolo: descarga, gunzip, parsea cada línea como un chunk JSON, reconstruye `body` con los **mismos parsers** del scraper (`parse_ohlcv`, `extract_fundamentals_from_quote_raw`).
-- Devuelve un dict `{original_symbol: body}` con la **misma forma exacta** que devolvía `run_tv_websocket_scraper` antes. Por eso `persist_ohlcv_base`, `persist_fundamentals_snapshot` y los runners de derivados **no se tocaron**.
-
-### 4.5 Fork `USE_VPS_RAW` en `main_runner.py`
-
-```python
-if _use_vps_raw():
-    all_batch_data = read_raw_from_s3(bucket=..., ingestion_date=...)
-else:
-    all_batch_data = run_tv_websocket_scraper(plan=..., ...)
-```
-
-- Detrás de env var `USE_VPS_RAW=true/false` en la task definition.
-- El default sigue siendo `false` → comportamiento histórico para rollback inmediato sin redeploy.
-- La Lambda dispatcher inyecta `USE_VPS_RAW=true` + `INGESTION_DATE=YYYY-MM-DD` cuando se dispara por el marker.
-
-### 4.6 Lambda `s3-done-trigger` — `aws/lambda/s3-done-trigger/`
+[`aws/lambda/s3-done-trigger/lambda_function.py`](aws/lambda/s3-done-trigger/lambda_function.py)
 
 - Trigger: S3 Event `s3:ObjectCreated:*` con filter `prefix=raw/tv/_DONE_`, `suffix=.txt`.
-- Acción: llama `ecs.run_task` con override de `environment` para inyectar `USE_VPS_RAW=true` y `INGESTION_DATE` (parseado del filename del marker, regex `_DONE_(\d{4}-\d{2}-\d{2})\.txt$`).
-- **Una sola task por día** porque el filter solo matchea el marker (los 746 archivos `data.jsonl.gz` no disparan nada).
-- Permisos: `ecs:RunTask`, `iam:PassRole` (sobre `ecsTaskExecutionRole` y `financial-etl-task-role`), `logs:*`.
+- Acción: parsea `INGESTION_DATE` del nombre del marker y llama `ecs.run_task(taskDefinition="financial-data-etl", overrides={environment: [INGESTION_DATE=...]})`.
+- Garantiza una sola task por marker (los `data.jsonl.gz` no disparan nada — el filter solo matchea `_DONE_*.txt`).
+
+### 3.5 Fargate processor — `financial_data_etl/main_runner.py`
+
+Entrypoint `python -m financial_data_etl.main_runner`. Lee env vars:
+- `INGESTION_DATE` (default = today UTC)
+- `VPS_S3_BUCKET`, `VPS_S3_PREFIX`
+- `VPS_PROCESSOR_BATCH_SIZE` (default 50)
+
+Flujo:
+
+1. **Streaming raw → persist por batch** vía [`stream_raw_batches_from_s3`](financial_data_etl/storage/raw_s3_reader.py): lista S3, descarga gzipeado, parsea con `parse_ohlcv` + `extract_fundamentals_from_quote_raw`, yieldea batches de 50 símbolos. Por cada batch corre `persist_ohlcv_base` y `persist_fundamentals_snapshot` y descarta el dict.
+2. **Derivados serializados** sobre el set de símbolos procesados: `run_price_performance_1d`, `run_volatility_1d`, `run_momentum_1d`. Uno por vez (no en paralelo) — cada runner carga toda la historia en pandas (~500 MB pico), y tres simultáneos darían OOM.
+
+### 3.6 Sizing de Fargate
+
+| Recurso | Valor | Justificación |
+|---|---|---|
+| `cpu` | 512 (0.5 vCPU) | Suficiente para I/O + pandas mono-thread. |
+| `memory` | 1024 MB | Pico real medido: ~500 MB (1 derivado en pandas). 1 GB da safety margin del 100%. |
+
+Streaming + serialización mantienen este sizing constante para bootstrap (744 símbolos × 4500 velas) **y** para incremental (744 × 1 vela). No hay auto-scaling porque el peor caso ya cabe.
 
 ---
 
-## 5. Infra AWS (cuenta `295933007543`, region `us-east-2`)
+## 4. Recursos AWS (account 295933007543, region us-east-2)
 
 | Recurso | Identificador | Notas |
 |---|---|---|
-| Bucket S3 raw | `leonardovila-financial-raw` (existente) | Prefijo nuevo: `raw/tv/`. Conviven con los parquets viejos en `tv_candles_raw/`, `momentum_1d/`, etc. (load_to_bigquery de marzo). |
-| S3 Event Notification | `vps-scrape-done-trigger` | Filter `prefix=raw/tv/_DONE_` + `suffix=.txt` → Lambda `s3-done-trigger`. |
-| Lambda | `s3-done-trigger` | Python 3.11. Role `s3-done-trigger-role`. |
-| IAM user (VPS) | `financial-data-vps-scraper` | Inline policy `write-raw-tv` (solo `s3:PutObject` y `s3:AbortMultipartUpload` sobre `raw/tv/*`). Access keys generadas y guardadas en `.secrets-out/vps-scraper-access-key.json` (chmod 600, NO commiteado). |
-| IAM role (Fargate task) | `financial-etl-task-role` | Inline policies `read-s3-raw` (S3 `GetObject`+`ListBucket` sobre `raw/tv/*`) y `read-app-secrets` (`secretsmanager:GetSecretValue` sobre `financial-data/*`). |
-| Secret | `financial-data/internal-api-token-4QMQ9b` | Bearer token del endpoint `/internal/*`. Inyectado al task como env `INTERNAL_API_TOKEN`. |
-| Task definition (ETL) | `financial-data-etl:5` | `taskRoleArn` apuntando al nuevo role; secrets `DATABASE_URL` + `INTERNAL_API_TOKEN`. |
-| Task definition (API) | `financial-data-api:N` (registrada esta iteración) | Agrega `INTERNAL_API_TOKEN` como secret para que el endpoint pueda autenticar. |
-| EventBridge (cron viejo) | `financial-etl-daily` | **Sigue habilitado** durante esta iteración. Se deshabilita después de validar que el flujo VPS→S3→Fargate funciona end-to-end. |
-| Lambda vieja | `etl-trigger` | Sigue activa, sin tocarla — es el rollback inmediato si algo se rompe. |
+| Bucket S3 | `leonardovila-financial-raw` | Prefix de este pipeline: `raw/tv/`. Convive con parquets de un export anterior bajo otros prefijos. |
+| S3 Event Notification | `vps-scrape-done-trigger` | Filter `prefix=raw/tv/_DONE_` + `suffix=.txt` → Lambda. |
+| Lambda | `s3-done-trigger` | Python 3.11. Role `s3-done-trigger-role` con `ecs:RunTask` + `iam:PassRole`. |
+| IAM user (VPS) | `financial-data-vps-scraper` | Inline policy `write-raw-tv` (solo `s3:PutObject` y `s3:AbortMultipartUpload` sobre `raw/tv/*`). Access keys en `/root/.aws/credentials` del VPS (chmod 600). |
+| IAM role (task ETL) | `financial-etl-task-role` | `read-s3-raw` (S3 GetObject + ListBucket sobre `raw/tv/*`) + `read-app-secrets` (Secrets Manager `financial-data/*`). |
+| IAM role (task execution) | `ecsTaskExecutionRole` | + inline `read-financial-data-secrets` para que ECS pueda pullear los secrets antes de arrancar el container. |
+| Secret | `financial-data/internal-api-token-4QMQ9b` | Bearer token para `/internal/*`. Inyectado al task de la API como env `INTERNAL_API_TOKEN`. |
+| Secret | `financial-data/rds-vqG2ip` | DATABASE_URL del RDS. Inyectado a las tasks ETL y API. |
+| Task definition (ETL) | `financial-data-etl:8` | cpu=512, mem=1024, taskRoleArn=`financial-etl-task-role`. |
+| Task definition (API) | `financial-data-api:N` | Sirve los endpoints REST + WebSocket edge. |
 
 ---
 
-## 6. Cómo correr una ingesta MANUAL (primera vez de validación)
+## 5. Recursos VPS
 
-> **Importante:** la primera corrida es manual para confirmar que los nuevos
-> assets entran al RDS y son visibles en el frontend. Después de validar, se
-> habilita el cron del VPS y se deshabilita el cron viejo de EventBridge.
+Host `forge-api-nyc` (`147.182.219.80`).
 
-### Paso 1 — Pre-flight: confirmar que la API tiene el endpoint
+| Path | Owner | Rol |
+|---|---|---|
+| `/root/financial-system/` | root | Git checkout del repo. |
+| `/root/financial-system/.venv/` | root | Python 3.12 venv (`pip install -e .`). |
+| `/root/.aws/credentials` | root, chmod 600 | Profile `vps-scraper`. |
+| `/etc/financial-data/api-token` | root, chmod 600 | Bearer token para `/internal/*`. |
+| `/etc/systemd/system/financial-vps-scraper.{service,timer}` | root | Versionados en [`aws/vps/systemd/`](aws/vps/systemd/). |
+| `/var/log/financial-vps-scraper.log` | root | stdout/stderr de la unit. |
+| `/var/run/financial-vps-scraper.lock` | root | Lockfile flock. |
 
-Desde tu máquina (local), con el token del archivo `.secrets-out/internal-api-token.txt`:
+Setup de cero documentado en [`aws/vps/README.md`](aws/vps/README.md).
+
+---
+
+## 6. Operación
+
+### Ejecución manual
 
 ```bash
-TOKEN=$(cat .secrets-out/internal-api-token.txt)
-curl -X POST \
-    -H "Authorization: Bearer $TOKEN" \
-    -H "Content-Type: application/json" \
-    -d '{"symbols":["AAPL","MSFT"],"timeframe":"1d"}' \
-    http://financial-api-alb-1680587852.us-east-2.elb.amazonaws.com/internal/increment-plan
-# Esperado: {"plan": {"AAPL": <int>, "MSFT": <int>}}
+ssh root@147.182.219.80
+systemctl start financial-vps-scraper.service
+LOG=$(ls -1t /root/financial-system/logs/RUN_*_vps_scraper.jsonl | head -1)
+tail -f $LOG
 ```
 
-### Paso 2 — Conectarse al VPS y disparar el scrape
+El resto del flujo (S3 marker → Lambda → ECS task → RDS) corre solo.
+
+### Schedule
 
 ```bash
-ssh <user>@<vps-ip>
-cd /opt/financial-data-etl   # ruta donde está deployado el paquete
-source .venv/bin/activate
-systemctl start financial-vps-scraper.service   # one-shot del timer
-journalctl -u financial-vps-scraper.service -f  # seguir logs
+systemctl list-timers financial-vps-scraper.timer
+# next: Mon..Fri 21:00 UTC
 ```
 
-### Paso 3 — Verificar S3 y disparo del Fargate
+### Pausar el cron
 
 ```bash
-# Archivos por símbolo
-aws s3 ls s3://leonardovila-financial-raw/raw/tv/ --recursive | head
-# Marker
-aws s3 ls s3://leonardovila-financial-raw/raw/tv/_DONE_$(date -u +%F).txt
-# Lambda invocada
+systemctl stop financial-vps-scraper.timer
+systemctl disable financial-vps-scraper.timer
+```
+
+### Logs en CloudWatch
+
+```bash
 aws logs tail /aws/lambda/s3-done-trigger --since 10m
-# Task ECS arrancando
-aws ecs list-tasks --cluster financial-data --desired-status RUNNING
-aws logs tail /ecs/financial-data-etl --since 10m
+aws logs tail /ecs/financial-data-etl --since 30m
 ```
 
-### Paso 4 — Verificar RDS
+---
+
+## 7. Validación post-run
 
 ```sql
--- Cantidad de símbolos cargados hoy
+-- Símbolos con velas cargadas hoy
 SELECT count(DISTINCT symbol)
 FROM tv_candles_raw
 WHERE ingested_at::date = CURRENT_DATE;
--- Esperado: ~742 (746 del seed - 4 sin provider_symbol antes del fix)
+-- Esperado: ~747
 
 -- Derivados al día
 SELECT count(*) FROM momentum_1d   WHERE date = CURRENT_DATE;
 SELECT count(*) FROM volatility_1d WHERE date = CURRENT_DATE;
 SELECT count(*) FROM performance_1d WHERE date = CURRENT_DATE;
+-- Esperado: ~747 cada una
 ```
-
-### Paso 5 — Verificar frontend
-
-Abrir `https://leonardovila.com` (o el subdominio del front), entrar al
-listado de símbolos y confirmar que aparecen tickers nuevos (ej. tickers RUT
-como `IONQ`, `RKLB`, `OKLO`, `WULF`, `MARA`).
-
-### Paso 6 — Habilitar el cron del VPS y deshabilitar el cron viejo
-
-Solo después de que el paso 4 y 5 pasen:
 
 ```bash
-# En el VPS
-sudo systemctl enable --now financial-vps-scraper.timer
-
-# En tu máquina local
-aws scheduler update-schedule --name financial-etl-daily --state DISABLED \
-    --schedule-expression "cron(0 21 ? * MON-FRI *)" \
-    --schedule-expression-timezone UTC \
-    --target '{"Arn":"arn:aws:lambda:us-east-2:295933007543:function:etl-trigger","RoleArn":"arn:aws:iam::295933007543:role/EventBridgeSchedulerRole"}' \
-    --flexible-time-window '{"Mode":"OFF"}'
+# Vía API (no requiere acceso al RDS)
+curl -s https://api.leonardovila.com/symbols | jq 'length'
+curl -s https://api.leonardovila.com/momentum/1d/AAPL | jq
 ```
 
 ---
 
-## 7. Decisiones de diseño y por qué (chuleta para entrevista)
+## 8. Tiempos y costos medidos
 
-**P: ¿Por qué partir el sistema en VPS + cloud en vez de tenerlo todo en cloud?**
-R: Por **IP reputation**. TradingView bloquea los rangos de IP de los datacenters. Antes de este sprint el RDS tenía 95 símbolos cargados sobre 2000 porque el WS desde Fargate fallaba la mayoría de las veces. Mover el scrape al VPS (IP residencial) sube la tasa de éxito a >95%.
-
-**P: ¿Por qué el VPS no consulta directo al RDS?**
-R: Para mantener el RDS aislado en la VPC privada. El VPS sólo se comunica con AWS por dos canales **bien acotados**:
-1. HTTPS al ALB → API → endpoint autenticado por bearer.
-2. S3 PutObject con un IAM user que sólo puede escribir bajo `raw/tv/*`.
-Eso me da: una sola superficie expuesta (la API), control sobre qué consultas puede correr el VPS (sólo el endpoint expuesto) y rotación de credenciales independiente. Si el VPS es comprometido, no hay acceso al RDS, no hay acceso a otros buckets, no hay acceso a otros endpoints.
-
-**P: ¿Por qué un marker `_DONE_` en S3 en lugar de cada `data.jsonl.gz` triggereando la Lambda?**
-R: Porque el VPS escribe ~700 archivos por noche, uno por símbolo. Si la Lambda escuchara cada `data.jsonl.gz` se dispararían 700 tasks de Fargate (basura: cada una procesando 1 símbolo). Con el marker la Lambda se dispara **exactamente una vez** por noche y la task procesa todo el día de una sola pasada. Sin SQS, sin debounce, sin lock: el filter `suffix=_DONE_*.txt` ya garantiza el dedupe.
-
-**P: ¿Para qué sirve el `increment_planner` si el upsert en RDS ya es idempotente?**
-R: Para **eficiencia**, no para corrección. El upsert en `tv_candles_raw` está deduplicando por `(symbol, timeframe, ts)`, así que reescribir velas existentes es seguro pero inútil. El planner consulta `MAX(ts)` por símbolo y le dice al VPS exactamente cuántas velas pedirle a TradingView: 1 vela para los símbolos al día, 8000 (`BOOTSTRAP_BARS`) para los nuevos. Resultado: el `data.jsonl.gz` que sube el VPS es chico para los símbolos al día y grande sólo cuando hace falta bootstrap.
-
-**P: ¿Por qué dejaste el cron viejo (`financial-etl-daily`) habilitado durante la iteración?**
-R: Como rollback inmediato. Si el flujo nuevo falla la primera noche, podemos seguir corriendo el viejo (que tiene baja tasa de éxito pero algo entrega). Una vez validado, se deshabilita.
-
-**P: ¿Por qué el VPS captura el chunk WS crudo y no lo parsea localmente?**
-R: Porque el VPS solo entrega RAW. Los parsers (`parse_ohlcv`, `extract_fundamentals_from_quote_raw`) viven en Fargate y son los **mismos** que el scraper original usa internamente. Si los duplicara en el VPS tendría que mantenerlos sincronizados manualmente. Con el callback `raw_capture` el VPS guarda el chunk JSON tal cual lo emitió TradingView (1 línea de JSONL por chunk) y Fargate corre los parsers reales.
-
-**P: ¿Por qué `JSONL.gz` y no Parquet?**
-R: Porque la regla operativa es "el VPS solo entrega RAW". Parquet implica tipar columnas, descartar campos que no entendés, fijar un schema. Eso es transformación. JSONL es exactamente lo que vino del WS, comprimido.
-
-**P: ¿Y el cleanup del raw en S3?**
-R: Por ahora lifecycle pendiente. La cantidad de raw es chica (con `increment_planner` la mayoría son archivos de 1 vela, ~5KB), así que no quema espacio. A futuro, lifecycle de 3-7 días para limpieza automática y dejar safety net por si hay que reprocesar tras fix de un parser bug.
-
----
-
-## 8. Archivos relevantes (referencia rápida)
-
-```
-financial_data_etl/
-├── vps_scraper/                                    ← NUEVO (corre en VPS)
-│   ├── runner.py
-│   ├── chunk_orchestrator.py
-│   ├── api_client.py
-│   ├── s3_uploader.py
-│   ├── lockfile.py
-│   └── config.py
-├── storage/
-│   └── raw_s3_reader.py                            ← NUEVO (corre en Fargate)
-├── api/app.py                                       ← endpoint /internal/increment-plan
-├── main_runner.py                                   ← fork USE_VPS_RAW
-├── catalog.json                                     ← +4 tickers (CASY, COHR, LITE, VRT)
-├── universe/storage/catalog_seed.txt                ← NUEVO (746 tickers)
-└── scraping_pipeline/tv_websocket_connection/
-    ├── call_execution/tradingview_ws.py             ← +callback raw_capture
-    └── tv_websocket_scraper.py                      ← propaga callback
-
-aws/
-├── lambda/s3-done-trigger/                          ← NUEVO
-│   ├── lambda_function.py
-│   ├── trust-policy.json
-│   └── policy.json
-├── iam/                                             ← NUEVO
-│   ├── vps-scraper-policy.json
-│   ├── financial-etl-task-trust-policy.json
-│   ├── financial-etl-task-role-policy.json
-│   └── financial-etl-task-role-secrets-policy.json
-├── s3/raw-bucket-notification.json                  ← NUEVO
-└── ecs/etl-task-definition.json                     ← +taskRoleArn +INTERNAL_API_TOKEN
-
-pyproject.toml                                       ← +boto3
-```
-
----
-
-## 9. Hotfixes que aparecieron en el primer run real (post-deploy)
-
-Documentados acá para que entren en la chuleta de la entrevista — son los típicos "lo que NO está en el plan" que un revisor pregunta.
-
-### 9.1 `WebSocketException 1009 — message too big`
-- **Síntoma:** todos los batches del primer chunk caían inmediatamente con el cierre 1009.
-- **Causa raíz:** la librería `websockets` de Python tiene `max_size=1MB` por default. Pedimos 4500 velas × 5 símbolos por batch + multiplexed quote frames → la respuesta de TradingView pasa fácil 1MB. TV cierra la conexión, el batch se reencola, vuelve a fallar, todos los símbolos van a `failures`.
-- **Fix:** `max_size=50 * 1024 * 1024` en `websockets.connect()` dentro de `connect_to_tradingview` ([tradingview_ws.py](financial_data_etl/scraping_pipeline/tv_websocket_connection/call_execution/tradingview_ws.py)). 50 MB da margen para `SYMBOLS_PER_BATCH` hasta ~20 incluso en bootstrap.
-- **Lección:** los defaults de las librerías son conservadores. Cuando un componente "anda bien en pruebas chicas pero falla en producción", el primer sospechoso son los límites de tamaño del transporte.
-
-### 9.2 `BOOTSTRAP_BARS = 8000` (más que las 4500 del seed del front)
-- **Síntoma:** durante el primer run los símbolos en bootstrap recibían ~8000 velas, pero el front solo sirve 4500.
-- **Causa raíz:** `increment_planner.BOOTSTRAP_BARS` quedó en 8000 desde antes del sprint. Sobre-ingestaba.
-- **Fix:** `BOOTSTRAP_BARS = 4500` ([increment_planner.py](financial_data_etl/storage/increment_planner.py)). Match exacto con `live_seed.load_historical_seed`.
-- **Lección:** mantener consistentes las constantes de "cuánto historico cargar" entre planner / store / front evita escribir velas que nadie va a leer.
-
-### 9.3 `ResourceInitializationError` al pullear el secret nuevo
-- **Síntoma:** la nueva task definition (con `INTERNAL_API_TOKEN` agregado a `secrets`) no levantaba; CloudWatch mostraba "is not authorized to perform: secretsmanager:GetSecretValue".
-- **Causa raíz:** los `secrets` de la task se pullean con el **execution role** (no el task role). Yo había attacheado la policy de secrets al `financial-etl-task-role` (taskRoleArn) pero no al `ecsTaskExecutionRole` (executionRoleArn), que es el que pullea ANTES de levantar el container.
-- **Fix:** inline policy `read-financial-data-secrets` sobre `ecsTaskExecutionRole` con `secretsmanager:GetSecretValue` sobre `arn:...:secret:financial-data/*`.
-- **Lección:** dos roles distintos en una task ECS — task role para lo que el container hace en runtime, execution role para lo que ECS hace antes de arrancar. Los secrets son responsabilidad del execution role.
-
-### 9.4 `ValueError: No universe specified` (la Lambda lanza la task sin --spx)
-- **Síntoma:** la task disparada por la Lambda terminaba con exit 1 y error en `resolve_and_cache_universe`.
-- **Causa raíz:** mi fork `if _use_vps_raw():` estaba en el paso 3 del flujo, pero el paso 1 (`resolve_and_cache_universe`) corría siempre y exigía argumentos CLI (`--spx`, `--ndx`, `--assets`). La Lambda lanza la task con override solo de env vars, sin args.
-- **Fix:** mover el branch `use_vps_raw` al inicio de `main()`. En modo VPS-raw se saltea universe + plan resolution (consumidos solo por el live scraper).
-- **Lección:** los puntos de bifurcación deben respetar las pre-condiciones de cada path. El fork tiene que ir antes de cualquier paso que solo aplique a un camino.
-
-### 9.5 OOM por cargar 744 bodies en memoria (workaround → fix real)
-- **Síntoma:** la task moría con `exit 137 (SIGKILL)` durante `read_raw_from_s3`.
-- **Workaround inicial:** subir la task a 1 vCPU / 4 GB RAM. Funcionó pero rompía el principio "pago por lo que uso" — el incremental real necesita ~50 MB.
-- **Fix real:** refactor a streaming. `stream_raw_batches_from_s3` es un generator que yieldea dicts de hasta `batch_size=50` símbolos. `main_runner` itera, persiste, descarta. Memoria pico: ~50 MB en vez de ~3 GB.
-- **Lección:** "subir el sizing" es el peor fix posible — quita la presión que te haría descubrir el verdadero problema. El primer instinto debe ser "¿por qué este componente come tanta memoria?", no "¿cuánta memoria le doy?".
-
-### 9.6 OOM en derivados (3 runners pandas-pesados en paralelo)
-- **Síntoma:** después del fix de streaming la task seguía muriendo SIGKILL — pero ahora durante `derived_metrics`.
-- **Causa raíz:** los 3 runners (price_performance, volatility, momentum) corrían en paralelo via `ThreadPoolExecutor(max_workers=3)`. Cada uno carga toda la historia de los 744 símbolos en pandas — ~500 MB pico cada uno. 3 simultáneos = ~1.5 GB.
-- **Fix:** `max_workers=1` (serializar). Cada runner corre uno a la vez, pico de memoria = el más grande de uno solo. Tiempo total: 117s (vs ~73s en paralelo, 60% más lento, aceptable).
-- **Sizing final:** task ECS a `cpu=512, memory=1024`. 4x menos que el workaround de 4GB, suficiente para el peor caso (bootstrap completo + derivados serializados).
-- **Lección:** la paralelización agrega memoria proporcional al grado de paralelismo. Cuando el pipeline es memory-bound, serializar suele ser el ajuste correcto.
-
----
-
-## 10. Setup definitivo post-cutover
-
-| Componente | Configuración final | Costo aproximado |
+| Fase | Bootstrap (1er run) | Incremental (run normal) |
 |---|---|---|
-| ECS task `financial-data-etl:8` | cpu=512 (0.5 vCPU), memory=1024 MB | ~$0.04 / corrida × 5/sem ≈ $0.80/mes |
-| Lambda `s3-done-trigger` | Python 3.11, 256 MB, ~1s por invocación | <$0.01/mes |
-| S3 `leonardovila-financial-raw/raw/tv/*` | ~14 MB/run (bootstrap), ~500 KB/run (incremental) | <$0.01/mes |
-| EventBridge `financial-etl-daily` | **DISABLED** — reemplazado por systemd timer del VPS | $0 |
-| systemd timer en VPS | Mon..Fri 21:00 UTC, lockfile flock anti-overlap | $0 (VPS ya pago) |
+| VPS scrape (15 chunks × 50 + sleep) | ~15 min | ~15 min (idéntico, dominado por sleeps) |
+| S3 → Lambda → ECS RunTask cold start | ~30 s | ~30 s |
+| Streaming + persist a RDS | ~10 min (744 × 4500 velas) | ~30 s (744 × 1 vela) |
+| Derivados serializados | ~2 min | ~2 min |
+| **Total wall-clock** | **~28 min** | **~18 min** |
 
-**Schedule efectivo desde 2026-05-03:**
-- 21:00 UTC lun-vie → VPS scrapea → sube a S3 → marker dispara Lambda → Lambda lanza Fargate task → 12 min después la base está actualizada y los derivados recomputados.
-- Bootstrap (un símbolo nuevo por primera vez): peak load. Ya validado: 12 min total, 1 GB RAM pico.
-- Incremental (caso normal post-cutover): solo 1-5 velas por símbolo. Estimado <2 min de Fargate.
-
----
-
-## 11. Validación técnica (qué tiene que pasar para considerarlo OK)
-
-| # | Check | Cómo verificar | Esperado |
-|---|---|---|---|
-| 1 | Endpoint `/internal/increment-plan` autentica y devuelve plan | curl con bearer token | `{"plan": {...}}` con tamaño > 0 |
-| 2 | VPS scrapea sin que TradingView lo bloquee | `journalctl -u financial-vps-scraper.service` | tasa de éxito > 95% |
-| 3 | Archivos en S3 con shape correcto | `aws s3 ls s3://.../raw/tv/symbol=AAPL/...` | un `data.jsonl.gz` por símbolo |
-| 4 | Marker dispara la Lambda | `aws logs tail /aws/lambda/s3-done-trigger` | log "Marker received... launching ECS RunTask" |
-| 5 | Lambda lanza UNA task ECS | `aws ecs list-tasks --cluster financial-data` | exactamente 1 task corriendo |
-| 6 | Task lee S3 y persiste a RDS | `aws logs tail /ecs/financial-data-etl` | spans `read_raw_from_s3` + `ohlcv_persist` + `derived_metrics` |
-| 7 | RDS tiene los 742 símbolos del día | query SQL del paso 4 de la sección 6 | `count distinct symbol ≈ 742` |
-| 8 | Frontend muestra los nuevos símbolos | https://leonardovila.com → listado | tickers RUT visibles |
+Costos estimados:
+- Fargate task: ~$0.04/run × 5 runs/sem ≈ **$0.80/mes**.
+- Lambda: <$0.01/mes.
+- S3: ~14 MB/run × 22 runs ≈ 300 MB/mes ≈ centavos.
+- ALB + RDS: sin cambio (ya facturado para el resto del sistema).
