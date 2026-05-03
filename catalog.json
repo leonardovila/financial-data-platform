@@ -1,4 +1,82 @@
 {
+  "S5FI": {
+    "provider_symbol": {
+      "tradingview": "INDEX:S5FI"
+    },
+    "ticker": "S5FI"
+  },
+  "ADD": {
+    "provider_symbol": {
+      "tradingview": "USI:ADD"
+    },
+    "ticker": "ADD"
+  },
+  "PCC": {
+    "provider_symbol": {
+      "tradingview": "USI:PCC"
+    },
+    "ticker": "PCC"
+  },
+  "VIX9D": {
+    "provider_symbol": {
+      "tradingview": "CBOE:VIX9D"
+    },
+    "ticker": "VIX9D"
+  },
+  "VVIX": {
+    "provider_symbol": {
+      "tradingview": "CBOE:VVIX"
+    },
+    "ticker": "VVIX"
+  },
+  "VIX3M": {
+    "provider_symbol": {
+      "tradingview": "CBOE:VIX3M"
+    },
+    "ticker": "VIX3M"
+  },
+  "VXX": {
+    "provider_symbol": {
+      "tradingview": "SPCFD:VXX"
+    },
+    "ticker": "VXX"
+  },
+  "UVXY": {
+    "provider_symbol": {
+      "tradingview": "FINRA:UVXY"
+    },
+    "ticker": "UVXY"
+  },
+  "US02Y": {
+    "provider_symbol": {
+      "tradingview": "TVC:US02Y"
+    },
+    "ticker": "US02Y"
+  },
+  "US10Y": {
+    "provider_symbol": {
+      "tradingview": "TVC:US10Y"
+    },
+    "ticker": "US10Y"
+  },
+  "US30Y": {
+    "provider_symbol": {
+      "tradingview": "TVC:US30Y"
+    },
+    "ticker": "US30Y"
+  },
+  "DXY": {
+    "provider_symbol": {
+      "tradingview": "TVC:DXY"
+    },
+    "ticker": "DXY"
+  },
+  "VIX": {
+    "provider_symbol": {
+      "tradingview": "TVC:VIX"
+    },
+    "ticker": "VIX"
+  },
   "ELF": {
     "provider_symbol": {
       "tradingview": "NYSE:ELF"
@@ -94,12 +172,6 @@
       "tradingview": "INDEX:HIGN"
     },
     "ticker": "HIGHN"
-  },
-  "ADD": {
-    "provider_symbol": {
-      "tradingview": "USI:ADD"
-    },
-    "ticker": "ADD"
   },
   "BTC": {
     "provider_symbol": {
