@@ -80,10 +80,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         if use_vps_raw:
             # The VPS already scraped the raw and dropped one .jsonl.gz per
             # symbol in S3. Skip universe + plan resolution (those are
-            # consumed by the live scraper, not by the S3 reader) and read
-            # the raw files directly. Persist + derived steps below stay
-            # exactly as in the live-scrape flow.
-            from financial_data_etl.storage.raw_s3_reader import read_raw_from_s3
+            # consumed by the live scraper, not by the S3 reader) and stream
+            # the raw files in mini-batches: read N symbols, persist them,
+            # drop them. This caps memory at ~N symbols' worth of candles
+            # regardless of how many files are in S3, so the task can run
+            # on a small profile even on bootstrap days.
+            from financial_data_etl.storage.raw_s3_reader import stream_raw_batches_from_s3
 
             timeframe = args.timeframe
             bucket = os.environ.get("VPS_S3_BUCKET", "leonardovila-financial-raw")
@@ -92,29 +94,57 @@ def main(argv: Optional[List[str]] = None) -> int:
                 "INGESTION_DATE",
                 datetime.now(timezone.utc).strftime("%Y-%m-%d"),
             )
+            batch_size = int(os.environ.get("VPS_PROCESSOR_BATCH_SIZE", "50"))
+
+            processed_symbols: set = set()
+            total_loaded = 0
+
             with ctx.span(
-                "read_raw_from_s3",
+                "read_raw_from_s3_streaming",
                 timeframe=timeframe,
                 bucket=bucket,
                 prefix=prefix,
                 ingestion_date=ingestion_date,
+                batch_size=batch_size,
             ):
-                all_batch_data = read_raw_from_s3(
-                    bucket=bucket,
-                    prefix=prefix,
-                    ingestion_date=ingestion_date,
-                    timeframe=timeframe,
-                )
+                for batch_idx, batch in enumerate(
+                    stream_raw_batches_from_s3(
+                        bucket=bucket,
+                        prefix=prefix,
+                        ingestion_date=ingestion_date,
+                        timeframe=timeframe,
+                        batch_size=batch_size,
+                    )
+                ):
+                    ctx.event(
+                        "vps_processor_batch",
+                        stage="read_raw_from_s3_streaming",
+                        batch_idx=batch_idx,
+                        symbols_in_batch=len(batch),
+                    )
+                    # Persist this batch and drop the dict so the next
+                    # iteration starts with a clean memory profile.
+                    persist_ohlcv_base(batch, ctx)
+                    persist_fundamentals_snapshot(batch, ctx)
+                    processed_symbols.update(batch.keys())
+                    total_loaded += len(batch)
+
                 ctx.event(
                     "read_raw_from_s3_summary",
-                    stage="read_raw_from_s3",
-                    symbols_loaded=len(all_batch_data),
+                    stage="read_raw_from_s3_streaming",
+                    symbols_loaded=total_loaded,
                     ingestion_date=ingestion_date,
                 )
-                if not all_batch_data:
-                    raise RuntimeError(
-                        f"read_raw_from_s3 returned 0 symbols for ingestion_date={ingestion_date}."
-                    )
+
+            if total_loaded == 0:
+                raise RuntimeError(
+                    f"stream_raw_batches_from_s3 returned 0 symbols for ingestion_date={ingestion_date}."
+                )
+
+            # all_batch_data is intentionally NOT populated here — persist
+            # already happened per-batch above. We only need the symbol list
+            # for the derived-metrics step below.
+            all_batch_data = {s: None for s in processed_symbols}
         else:
             # -------------------------
             # 1️⃣ Resolver universo (live scrape only)
@@ -158,19 +188,23 @@ def main(argv: Optional[List[str]] = None) -> int:
                 if not all_batch_data:
                     raise RuntimeError("tv_websocket_scrape returned 0 symbols (all_batch_data empty).")
 
-        # 3B) PERSIST ONLY (ohlcv base)
-        with ctx.span(
-            "ohlcv_persist",
-            timeframe=timeframe,
-            symbols=len(all_batch_data),
-        ):
-            persist_ohlcv_base(all_batch_data, ctx)
+        # 3B) PERSIST ONLY — skipped in USE_VPS_RAW mode because
+        # stream_raw_batches_from_s3 already persisted per batch above
+        # (memory-bounded), and all_batch_data is intentionally a
+        # {symbol: None} stub at this point.
+        if not use_vps_raw:
+            with ctx.span(
+                "ohlcv_persist",
+                timeframe=timeframe,
+                symbols=len(all_batch_data),
+            ):
+                persist_ohlcv_base(all_batch_data, ctx)
 
-        with ctx.span(
-            "fundamentals_persist",
-            symbols=len(all_batch_data),
-        ):
-            persist_fundamentals_snapshot(all_batch_data, ctx)
+            with ctx.span(
+                "fundamentals_persist",
+                symbols=len(all_batch_data),
+            ):
+                persist_fundamentals_snapshot(all_batch_data, ctx)
 
         derived_symbols = list(all_batch_data.keys())
 

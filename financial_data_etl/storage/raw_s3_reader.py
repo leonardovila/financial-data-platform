@@ -116,34 +116,41 @@ def _reassemble_body(
     }
 
 
-def read_raw_from_s3(
+def stream_raw_batches_from_s3(
     *,
     bucket: str,
     prefix: str,
     ingestion_date: str,
     timeframe: str,
     region: str = "us-east-2",
-) -> Dict[str, dict]:
+    batch_size: int = 50,
+):
     """
-    Returns {original_symbol: body} with the same shape run_tv_websocket_scraper returns.
+    Generator: yields {symbol: body} dicts of up to `batch_size` symbols at
+    a time.
 
-    Symbols whose raw file is unparseable or missing OHLCV are logged and skipped
-    (the next nightly run will retry them).
+    Memory stays bounded at ~`batch_size` symbols' worth of candles regardless
+    of how many files live in S3 — caller is expected to persist + drop the
+    batch reference between iterations. This is what lets the Fargate
+    processor task run on a small (256/512) profile even on bootstrap days.
     """
     catalog = load_assets_catalog()
     client = _s3_client(region)
 
     keys = _list_symbol_keys(client, bucket, prefix, ingestion_date)
     logger.info(
-        "raw_s3_reader: found %d files under s3://%s/%s for ingestion_date=%s",
-        len(keys), bucket, prefix.strip("/"), ingestion_date,
+        "stream_raw_batches: %d files under s3://%s/%s for ingestion_date=%s, batch_size=%d",
+        len(keys), bucket, prefix.strip("/"), ingestion_date, batch_size,
     )
 
-    results: Dict[str, dict] = {}
+    batch: Dict[str, dict] = {}
+    processed = 0
+    skipped = 0
     for symbol, key in keys:
         cfg = catalog.get(symbol)
         if not cfg:
-            logger.warning("raw_s3_reader: %s not in catalog, skipping %s", symbol, key)
+            skipped += 1
+            logger.warning("stream_raw_batches: %s not in catalog, skipping %s", symbol, key)
             continue
         provider_symbol = (
             cfg.get("provider_symbol", {}).get("tradingview") or symbol
@@ -158,14 +165,51 @@ def read_raw_from_s3(
                 chunks, timeframe=timeframe, provider_symbol=provider_symbol
             )
             if body is None:
-                logger.warning("raw_s3_reader: no usable OHLCV in %s", key)
+                skipped += 1
+                logger.warning("stream_raw_batches: no usable OHLCV in %s", key)
                 continue
-            results[symbol] = body
+            batch[symbol] = body
+            processed += 1
+            if len(batch) >= batch_size:
+                yield batch
+                batch = {}
         except Exception as e:
-            logger.error("raw_s3_reader: failed to process %s: %s", key, e)
+            skipped += 1
+            logger.error("stream_raw_batches: failed to process %s: %s", key, e)
             continue
 
+    if batch:
+        yield batch
+
     logger.info(
-        "raw_s3_reader: reassembled %d/%d symbols", len(results), len(keys)
+        "stream_raw_batches done: processed=%d skipped=%d (of %d files)",
+        processed, skipped, len(keys),
     )
-    return results
+
+
+def read_raw_from_s3(
+    *,
+    bucket: str,
+    prefix: str,
+    ingestion_date: str,
+    timeframe: str,
+    region: str = "us-east-2",
+) -> Dict[str, dict]:
+    """
+    Eager wrapper around stream_raw_batches_from_s3 — loads ALL symbols into
+    one dict and returns it. Kept for backward compatibility / one-off scripts.
+    For the Fargate processor use stream_raw_batches_from_s3 instead so the
+    memory footprint stays bounded.
+    """
+    out: Dict[str, dict] = {}
+    for batch in stream_raw_batches_from_s3(
+        bucket=bucket,
+        prefix=prefix,
+        ingestion_date=ingestion_date,
+        timeframe=timeframe,
+        region=region,
+        batch_size=10**9,  # effectively no batching
+    ):
+        out.update(batch)
+    logger.info("read_raw_from_s3 (eager wrapper): %d symbols loaded", len(out))
+    return out
