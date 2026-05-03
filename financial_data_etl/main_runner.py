@@ -62,38 +62,30 @@ def parse_cli(argv: Optional[List[str]] = None) -> argparse.Namespace:
     return args
 
 def main(argv: Optional[List[str]] = None) -> int:
-    args = parse_cli(argv)
+    # In USE_VPS_RAW mode the task is launched by the Lambda dispatcher with
+    # NO CLI args (only env vars), so universe + plan resolution from --spx
+    # / --assets does not apply and would crash. We branch BEFORE parsing
+    # the CLI args for that mode.
+    use_vps_raw = _use_vps_raw()
+
+    if use_vps_raw:
+        args = argparse.Namespace(timeframe=os.environ.get("VPS_TIMEFRAME", "1d"))
+    else:
+        args = parse_cli(argv)
+
     ctx = RunContext(run_name="financial_data_etl_main", console=True)
     status = "success"
 
     try:
-        # -------------------------
-        # 1️⃣ Resolver universo
-        # -------------------------
-        with ctx.span("universe_resolve"):
-            symbols = resolve_and_cache_universe(args, ctx=ctx)
-
-        if not symbols:
-            raise RuntimeError("No symbols resolved.")
-
-        # -------------------------
-        # 2️⃣ Build incremental plan
-        # -------------------------
-        timeframe = args.timeframe
-
-        with ctx.span("increment_plan", symbols=len(symbols), timeframe=timeframe):
-            plan = build_increment_plan(symbols, timeframe=timeframe, ctx=ctx)
-
-        # -------------------------
-        # 3️⃣ Get OHLCV+fundamentals: live scrape (default) or S3 raw read (VPS mode)
-        # -------------------------
-        if _use_vps_raw():
+        if use_vps_raw:
             # The VPS already scraped the raw and dropped one .jsonl.gz per
-            # symbol in S3. Read those, reassemble the same body dict the
-            # scraper returns, and feed the existing persist + derived steps
-            # without touching them.
+            # symbol in S3. Skip universe + plan resolution (those are
+            # consumed by the live scraper, not by the S3 reader) and read
+            # the raw files directly. Persist + derived steps below stay
+            # exactly as in the live-scrape flow.
             from financial_data_etl.storage.raw_s3_reader import read_raw_from_s3
 
+            timeframe = args.timeframe
             bucket = os.environ.get("VPS_S3_BUCKET", "leonardovila-financial-raw")
             prefix = os.environ.get("VPS_S3_PREFIX", "raw/tv")
             ingestion_date = os.environ.get(
@@ -124,6 +116,26 @@ def main(argv: Optional[List[str]] = None) -> int:
                         f"read_raw_from_s3 returned 0 symbols for ingestion_date={ingestion_date}."
                     )
         else:
+            # -------------------------
+            # 1️⃣ Resolver universo (live scrape only)
+            # -------------------------
+            with ctx.span("universe_resolve"):
+                symbols = resolve_and_cache_universe(args, ctx=ctx)
+
+            if not symbols:
+                raise RuntimeError("No symbols resolved.")
+
+            # -------------------------
+            # 2️⃣ Build incremental plan (live scrape only)
+            # -------------------------
+            timeframe = args.timeframe
+
+            with ctx.span("increment_plan", symbols=len(symbols), timeframe=timeframe):
+                plan = build_increment_plan(symbols, timeframe=timeframe, ctx=ctx)
+
+            # -------------------------
+            # 3️⃣ Live scrape
+            # -------------------------
             with ctx.span(
                 "tv_websocket_scrape",
                 timeframe=timeframe,
