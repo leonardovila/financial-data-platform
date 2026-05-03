@@ -1,0 +1,30 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "RunETLTask",
+      "Effect": "Allow",
+      "Action": "ecs:RunTask",
+      "Resource": "arn:aws:ecs:us-east-2:295933007543:task-definition/financial-data-etl:*"
+    },
+    {
+      "Sid": "PassRoles",
+      "Effect": "Allow",
+      "Action": "iam:PassRole",
+      "Resource": [
+        "arn:aws:iam::295933007543:role/ecsTaskExecutionRole",
+        "arn:aws:iam::295933007543:role/financial-etl-task-role"
+      ]
+    },
+    {
+      "Sid": "LambdaLogs",
+      "Effect": "Allow",
+      "Action": [
+        "logs:CreateLogGroup",
+        "logs:CreateLogStream",
+        "logs:PutLogEvents"
+      ],
+      "Resource": "arn:aws:logs:us-east-2:295933007543:log-group:/aws/lambda/s3-done-trigger:*"
+    }
+  ]
+}

@@ -1,4 +1,28 @@
 {
+  "CASY": {
+    "provider_symbol": {
+      "tradingview": "NASDAQ:CASY"
+    },
+    "ticker": "CASY"
+  },
+  "COHR": {
+    "provider_symbol": {
+      "tradingview": "NYSE:COHR"
+    },
+    "ticker": "COHR"
+  },
+  "LITE": {
+    "provider_symbol": {
+      "tradingview": "NASDAQ:LITE"
+    },
+    "ticker": "LITE"
+  },
+  "VRT": {
+    "provider_symbol": {
+      "tradingview": "NYSE:VRT"
+    },
+    "ticker": "VRT"
+  },
   "RKLB": {
     "provider_symbol": {
       "tradingview": "NASDAQ:RKLB"
@@ -7735,7 +7759,7 @@
   },
   "DCOM": {
     "provider_symbol": {
-      "tradingview": "NASDAQ:DCOM"
+      "tradingview": "NYSE:DCOM"
     },
     "ticker": "DCOM"
   },
@@ -8887,7 +8911,7 @@
   },
   "UAMY": {
     "provider_symbol": {
-      "tradingview": "AMEX:UAMY"
+      "tradingview": "NYSE:UAMY"
     },
     "ticker": "UAMY"
   },
@@ -14638,5 +14662,161 @@
       "tradingview": "NYSE:XRN"
     },
     "ticker": "XRN"
+  },
+  "YSS": {
+    "provider_symbol": {
+      "tradingview": "NYSE:YSS"
+    },
+    "ticker": "YSS"
+  },
+  "BETA": {
+    "provider_symbol": {
+      "tradingview": "NYSE:BETA"
+    },
+    "ticker": "BETA"
+  },
+  "CDNL": {
+    "provider_symbol": {
+      "tradingview": "NASDAQ:CDNL"
+    },
+    "ticker": "CDNL"
+  },
+  "WLTH": {
+    "provider_symbol": {
+      "tradingview": "NASDAQ:WLTH"
+    },
+    "ticker": "WLTH"
+  },
+  "XZO": {
+    "provider_symbol": {
+      "tradingview": "NYSE:XZO"
+    },
+    "ticker": "XZO"
+  },
+  "AKTS": {
+    "provider_symbol": {
+      "tradingview": "NASDAQ:AKTS"
+    },
+    "ticker": "AKTS"
+  },
+  "LMRI": {
+    "provider_symbol": {
+      "tradingview": "NASDAQ:LMRI"
+    },
+    "ticker": "LMRI"
+  },
+  "EVMN": {
+    "provider_symbol": {
+      "tradingview": "NYSE:EVMN"
+    },
+    "ticker": "EVMN"
+  },
+  "AHRT": {
+    "provider_symbol": {
+      "tradingview": "NYSE:AHRT"
+    },
+    "ticker": "AHRT"
+  },
+  "NEXN": {
+    "provider_symbol": {
+      "tradingview": "NASDAQ:NEXN"
+    },
+    "ticker": "NEXN"
+  },
+  "USGO": {
+    "provider_symbol": {
+      "tradingview": "NASDAQ:USGO"
+    },
+    "ticker": "USGO"
+  },
+  "ATLN": {
+    "provider_symbol": {
+      "tradingview": "NASDAQ:ATLN"
+    },
+    "ticker": "ATLN"
+  },
+  "MRDN": {
+    "provider_symbol": {
+      "tradingview": "NASDAQ:MRDN"
+    },
+    "ticker": "MRDN"
+  },
+  "TSEOF": {
+    "provider_symbol": {
+      "tradingview": "OTC:TSEOF"
+    },
+    "ticker": "TSEOF"
+  },
+  "S5FI": {
+    "provider_symbol": {
+      "tradingview": "INDEX:S5FI"
+    },
+    "ticker": "S5FI"
+  },
+  "PCC": {
+    "provider_symbol": {
+      "tradingview": "USI:PCC"
+    },
+    "ticker": "PCC"
+  },
+  "VIX9D": {
+    "provider_symbol": {
+      "tradingview": "CBOE:VIX9D"
+    },
+    "ticker": "VIX9D"
+  },
+  "VVIX": {
+    "provider_symbol": {
+      "tradingview": "CBOE:VVIX"
+    },
+    "ticker": "VVIX"
+  },
+  "VIX3M": {
+    "provider_symbol": {
+      "tradingview": "CBOE:VIX3M"
+    },
+    "ticker": "VIX3M"
+  },
+  "VXX": {
+    "provider_symbol": {
+      "tradingview": "AMEX:VXX"
+    },
+    "ticker": "VXX"
+  },
+  "UVXY": {
+    "provider_symbol": {
+      "tradingview": "AMEX:UVXY"
+    },
+    "ticker": "UVXY"
+  },
+  "US02Y": {
+    "provider_symbol": {
+      "tradingview": "TVC:US02Y"
+    },
+    "ticker": "US02Y"
+  },
+  "US10Y": {
+    "provider_symbol": {
+      "tradingview": "TVC:US10Y"
+    },
+    "ticker": "US10Y"
+  },
+  "US30Y": {
+    "provider_symbol": {
+      "tradingview": "TVC:US30Y"
+    },
+    "ticker": "US30Y"
+  },
+  "DXY": {
+    "provider_symbol": {
+      "tradingview": "TVC:DXY"
+    },
+    "ticker": "DXY"
+  },
+  "VIX": {
+    "provider_symbol": {
+      "tradingview": "TVC:VIX"
+    },
+    "ticker": "VIX"
   }
 }

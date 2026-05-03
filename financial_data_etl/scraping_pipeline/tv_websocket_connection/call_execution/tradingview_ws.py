@@ -9,7 +9,7 @@ Refactored for:
 """
 
 from __future__ import annotations
-from typing import Dict, Any, Optional, AsyncGenerator, Tuple, List
+from typing import Dict, Any, Optional, AsyncGenerator, Tuple, List, Callable
 import json, re, asyncio, itertools, websockets
 from pathlib import Path
 from datetime import datetime
@@ -339,6 +339,7 @@ _QUOTE_FIELDS = [
 async def request_batch_multiplexed(
     session: Dict[str, Any],
     batch_items: list,
+    raw_capture: Optional[Callable[[str, str], None]] = None,
 ) -> tuple:
     """
     Multiplexed multi-symbol request over a single WebSocket connection.
@@ -347,6 +348,11 @@ async def request_batch_multiplexed(
         session: open WS session from open_session()
         batch_items: list of dicts, each with keys:
             provider_symbol, chart_id, quote_id, timeframe, n_candles
+        raw_capture: optional callback (provider_symbol, raw_chunk_str) -> None.
+            Invoked once per parseable chunk that can be routed to a known
+            symbol. Used by the VPS scraper to dump raw WS chunks to S3
+            without parsing. Exceptions inside the callback are swallowed
+            so they never break the scrape.
 
     Returns:
         (successes, failures) where:
@@ -446,6 +452,19 @@ async def request_batch_multiplexed(
             mtype = payload.get("m")
             p = payload.get("p", [])
             sid = p[0] if p else None
+
+            # ── RAW CAPTURE (VPS scraper hook: dump chunk to S3 unparsed) ──
+            if raw_capture is not None:
+                state_for_chunk = None
+                if mtype in ("symbol_resolved", "timescale_update") and sid in chart_route:
+                    state_for_chunk = chart_route[sid]
+                elif mtype in ("qsd", "quote_completed") and sid in quote_route:
+                    state_for_chunk = quote_route[sid]
+                if state_for_chunk is not None:
+                    try:
+                        raw_capture(state_for_chunk["provider_symbol"], chunk)
+                    except Exception:
+                        pass
 
             # ── OHLCV responses (routed by chart_id) ──
             if mtype == "symbol_resolved" and sid in chart_route:

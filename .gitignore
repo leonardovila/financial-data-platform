@@ -44,6 +44,9 @@ Thumbs.db
 *-sa-key.json
 gcp/**/*-key.json
 
+# Local secret outputs from infra setup scripts — NEVER commit
+.secrets-out/
+
 # DBT artifacts — regenerados por `dbt deps` / `dbt run`, no van al repo
 financial_dwh/target/
 financial_dwh/dbt_packages/

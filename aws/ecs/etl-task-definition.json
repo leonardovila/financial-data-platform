@@ -5,6 +5,7 @@
   "cpu": "512",
   "memory": "1024",
   "executionRoleArn": "arn:aws:iam::295933007543:role/ecsTaskExecutionRole",
+  "taskRoleArn": "arn:aws:iam::295933007543:role/financial-etl-task-role",
   "containerDefinitions": [
     {
       "name": "etl",
@@ -13,10 +14,14 @@
       "entryPoint": ["python", "-m", "financial_data_etl.main_runner"],
       "environment": [
         {"name": "WS_POOL_SIZE", "value": "2"},
-        {"name": "SYMBOLS_PER_BATCH", "value": "5"}
+        {"name": "SYMBOLS_PER_BATCH", "value": "5"},
+        {"name": "VPS_S3_BUCKET", "value": "leonardovila-financial-raw"},
+        {"name": "VPS_S3_PREFIX", "value": "raw/tv"},
+        {"name": "AWS_REGION", "value": "us-east-2"}
       ],
       "secrets": [
-        {"name": "DATABASE_URL", "valueFrom": "arn:aws:secretsmanager:us-east-2:295933007543:secret:financial-data/rds-vqG2ip"}
+        {"name": "DATABASE_URL", "valueFrom": "arn:aws:secretsmanager:us-east-2:295933007543:secret:financial-data/rds-vqG2ip"},
+        {"name": "INTERNAL_API_TOKEN", "valueFrom": "arn:aws:secretsmanager:us-east-2:295933007543:secret:financial-data/internal-api-token-4QMQ9b"}
       ],
       "logConfiguration": {
         "logDriver": "awslogs",

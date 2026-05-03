@@ -1,0 +1,17 @@
+{
+  "LambdaFunctionConfigurations": [
+    {
+      "Id": "vps-scrape-done-trigger",
+      "LambdaFunctionArn": "arn:aws:lambda:us-east-2:295933007543:function:s3-done-trigger",
+      "Events": ["s3:ObjectCreated:*"],
+      "Filter": {
+        "Key": {
+          "FilterRules": [
+            { "Name": "prefix", "Value": "raw/tv/_DONE_" },
+            { "Name": "suffix", "Value": ".txt" }
+          ]
+        }
+      }
+    }
+  ]
+}

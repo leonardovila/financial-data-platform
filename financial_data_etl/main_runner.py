@@ -9,9 +9,16 @@ from financial_data_etl.derived_metrics.momentum.momentum_runner import run_mome
 from financial_data_etl.observability.run_context import RunContext
 
 import argparse
+import os
+from datetime import datetime, timezone
 from typing import List, Optional
 
 from financial_data_etl.storage.paths import DB_PATH
+
+
+def _use_vps_raw() -> bool:
+    """USE_VPS_RAW=true switches step 3 from live scrape to S3 raw read."""
+    return os.environ.get("USE_VPS_RAW", "false").lower() in ("1", "true", "yes")
 
 def build_cli_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -78,29 +85,66 @@ def main(argv: Optional[List[str]] = None) -> int:
             plan = build_increment_plan(symbols, timeframe=timeframe, ctx=ctx)
 
         # -------------------------
-        # 3️⃣ Scrape (pool-based, all symbols in one pass)
+        # 3️⃣ Get OHLCV+fundamentals: live scrape (default) or S3 raw read (VPS mode)
         # -------------------------
-        with ctx.span(
-            "tv_websocket_scrape",
-            timeframe=timeframe,
-            symbols=len(plan),
-        ):
-            all_batch_data = run_tv_websocket_scraper(
-                plan=plan,
+        if _use_vps_raw():
+            # The VPS already scraped the raw and dropped one .jsonl.gz per
+            # symbol in S3. Read those, reassemble the same body dict the
+            # scraper returns, and feed the existing persist + derived steps
+            # without touching them.
+            from financial_data_etl.storage.raw_s3_reader import read_raw_from_s3
+
+            bucket = os.environ.get("VPS_S3_BUCKET", "leonardovila-financial-raw")
+            prefix = os.environ.get("VPS_S3_PREFIX", "raw/tv")
+            ingestion_date = os.environ.get(
+                "INGESTION_DATE",
+                datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+            )
+            with ctx.span(
+                "read_raw_from_s3",
                 timeframe=timeframe,
-                ctx=ctx,
-                stage="tv_websocket_scrape",
-            )
+                bucket=bucket,
+                prefix=prefix,
+                ingestion_date=ingestion_date,
+            ):
+                all_batch_data = read_raw_from_s3(
+                    bucket=bucket,
+                    prefix=prefix,
+                    ingestion_date=ingestion_date,
+                    timeframe=timeframe,
+                )
+                ctx.event(
+                    "read_raw_from_s3_summary",
+                    stage="read_raw_from_s3",
+                    symbols_loaded=len(all_batch_data),
+                    ingestion_date=ingestion_date,
+                )
+                if not all_batch_data:
+                    raise RuntimeError(
+                        f"read_raw_from_s3 returned 0 symbols for ingestion_date={ingestion_date}."
+                    )
+        else:
+            with ctx.span(
+                "tv_websocket_scrape",
+                timeframe=timeframe,
+                symbols=len(plan),
+            ):
+                all_batch_data = run_tv_websocket_scraper(
+                    plan=plan,
+                    timeframe=timeframe,
+                    ctx=ctx,
+                    stage="tv_websocket_scrape",
+                )
 
-            ctx.event(
-                "tv_websocket_scrape_summary",
-                stage="tv_websocket_scrape",
-                symbols_requested=len(plan),
-                symbols_success=len(all_batch_data),
-            )
+                ctx.event(
+                    "tv_websocket_scrape_summary",
+                    stage="tv_websocket_scrape",
+                    symbols_requested=len(plan),
+                    symbols_success=len(all_batch_data),
+                )
 
-            if not all_batch_data:
-                raise RuntimeError("tv_websocket_scrape returned 0 symbols (all_batch_data empty).")
+                if not all_batch_data:
+                    raise RuntimeError("tv_websocket_scrape returned 0 symbols (all_batch_data empty).")
 
         # 3B) PERSIST ONLY (ohlcv base)
         with ctx.span(

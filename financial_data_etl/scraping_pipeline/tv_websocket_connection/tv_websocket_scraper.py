@@ -45,6 +45,7 @@ async def _pool_worker(
     results: dict,
     failures: list,
     stage: str,
+    raw_capture=None,
 ):
     """
     Persistent worker: opens ONE WebSocket, pulls batches of up to
@@ -108,7 +109,7 @@ async def _pool_worker(
 
             # ── EXECUTE MULTIPLEXED BATCH ──
             batch_results, batch_fails = await request_batch_multiplexed(
-                session, batch_specs
+                session, batch_specs, raw_capture=raw_capture
             )
 
             # ── PROCESS RESULTS ──
@@ -241,6 +242,7 @@ async def _run_pool(
     catalog: dict,
     ctx: RunContext,
     stage: str,
+    raw_capture=None,
 ) -> tuple:
     """Populate queue, launch pool workers, return (results, failures)."""
     queue = asyncio.Queue()
@@ -254,7 +256,7 @@ async def _run_pool(
 
     workers = [
         asyncio.create_task(
-            _pool_worker(i, queue, catalog, timeframe, ctx, results, failures, stage)
+            _pool_worker(i, queue, catalog, timeframe, ctx, results, failures, stage, raw_capture=raw_capture)
         )
         for i in range(pool_size)
     ]
@@ -274,6 +276,7 @@ def run_tv_websocket_scraper(
     ctx: RunContext,
     *,
     stage: str,
+    raw_capture=None,
 ) -> dict:
     """
     Pool-based scraper with batch multiplexing.
@@ -286,6 +289,10 @@ def run_tv_websocket_scraper(
         timeframe: e.g. "1d"
         ctx: RunContext for observability.
         stage: stage name for logging.
+        raw_capture: optional callback (provider_symbol, raw_chunk_str) -> None.
+            When provided, every parseable WS chunk routed to a known symbol
+            is forwarded to this callback BEFORE parsing. Used by the VPS
+            scraper to dump raw chunks to S3 without parsing them locally.
 
     Returns:
         dict: {symbol: body_with_fundamentals}
@@ -304,7 +311,7 @@ def run_tv_websocket_scraper(
 
     try:
         results, failures = asyncio.run(
-            _run_pool(plan, timeframe, catalog, ctx, stage)
+            _run_pool(plan, timeframe, catalog, ctx, stage, raw_capture=raw_capture)
         )
     finally:
         close_global_ws_trace()

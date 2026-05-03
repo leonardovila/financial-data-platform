@@ -19,8 +19,9 @@ import os
 from contextlib import asynccontextmanager
 from urllib.parse import parse_qs
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Header, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 
 from financial_data_etl.storage.database import (
     get_connection, get_dict_connection, fetchall, fetchone_dict, PH,
@@ -151,6 +152,65 @@ def health():
     to decide whether this container is healthy and should receive traffic.
     """
     return {"status": "ok"}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# INTERNAL ENDPOINTS (auth via bearer token; called by the VPS scraper)
+# ══════════════════════════════════════════════════════════════════════════════
+
+INTERNAL_API_TOKEN = os.environ.get("INTERNAL_API_TOKEN")
+
+
+def verify_internal_token(authorization: str | None = Header(default=None)):
+    """
+    Bearer token auth for the /internal/* endpoints.
+
+    The token lives in env var INTERNAL_API_TOKEN (loaded from Secrets Manager
+    at task boot via the ECS task definition). The VPS reads its copy from
+    /etc/financial-data/api-token (chmod 600) and sends it in the
+    Authorization header.
+
+    Returns 503 if the token is not configured at all (so misconfig is loud,
+    not a silent allow), 401 on missing/invalid token.
+    """
+    if not INTERNAL_API_TOKEN:
+        raise HTTPException(status_code=503, detail="Internal API token not configured")
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing bearer token")
+    if authorization[len("Bearer "):] != INTERNAL_API_TOKEN:
+        raise HTTPException(status_code=401, detail="Invalid bearer token")
+    return True
+
+
+class IncrementPlanRequest(BaseModel):
+    symbols: list[str]
+    timeframe: str = "1d"
+
+
+@app.post("/internal/increment-plan")
+def internal_increment_plan(
+    req: IncrementPlanRequest,
+    _auth: bool = Depends(verify_internal_token),
+):
+    """
+    Compute the increment plan against RDS and return it to the VPS scraper.
+
+    The VPS uses this so it only scrapes what the RDS actually needs (delta
+    per symbol). Symbols already up to date (n=0) are dropped from the
+    response so the VPS doesn't even attempt them.
+
+    Body:  {"symbols": ["AAPL", ...], "timeframe": "1d"}
+    Response: {"plan": {"AAPL": 1, "RKLB": 8000, ...}}
+    """
+    from financial_data_etl.storage.increment_planner import build_increment_plan
+
+    if not req.symbols:
+        return {"plan": {}}
+
+    plan = build_increment_plan(req.symbols, timeframe=req.timeframe)
+    # Drop entries with n<=0 so the VPS skips them entirely.
+    plan = {s: int(n) for s, n in plan.items() if int(n) > 0}
+    return {"plan": plan}
 
 
 @app.get("/symbols")
