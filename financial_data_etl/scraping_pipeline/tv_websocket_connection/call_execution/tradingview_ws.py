@@ -73,6 +73,12 @@ async def connect_to_tradingview(timeout_s: int = 15, trace_file=None):
                     "User-Agent": "Mozilla/5.0"
                 },
                 open_timeout=timeout_s,
+                # Bootstrap requests (8000 candles x N symbols multiplexed) can
+                # easily exceed the websockets-library default 1 MB frame cap
+                # and the server replies with close code 1009 (message too big),
+                # killing the whole batch. 50 MB gives enough headroom for
+                # SYMBOLS_PER_BATCH up to ~20 even on full-history requests.
+                max_size=50 * 1024 * 1024,
             )
 
             rawMessage = await asyncio.wait_for(websocket.recv(), timeout=timeout_s)
