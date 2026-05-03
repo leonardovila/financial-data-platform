@@ -6,7 +6,7 @@ from .tv_candles_store import init_tv_candles_schema
 from financial_data_etl.storage.database import get_connection, fetchall, PH
 
 # Política inicial (simple pero correcta)
-BOOTSTRAP_BARS = 8000
+BOOTSTRAP_BARS = 4500
 MAX_CATCHUP_BARS = 600
 OVERLAP_BARS = 1
 
