@@ -1,0 +1,20 @@
+# dbt connection profile for financial_dwh.
+#
+# Credentials come from a service-account JSON file pointed at by
+# GOOGLE_APPLICATION_CREDENTIALS. In ECS the processor task writes the
+# secret GCP_SA_KEY_JSON to /tmp/gcp-sa.json and exports the env var
+# before invoking `dbt run` (see financial_data_etl/main_runner.py).
+
+financial_dwh:
+  target: prod
+  outputs:
+    prod:
+      type: bigquery
+      method: service-account
+      keyfile: "{{ env_var('GOOGLE_APPLICATION_CREDENTIALS') }}"
+      project: "{{ env_var('GCP_PROJECT', 'financial-data-etl') }}"
+      dataset: financial_staging
+      threads: 4
+      timeout_seconds: 600
+      location: US
+      priority: interactive
