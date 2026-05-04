@@ -15,7 +15,6 @@
 
 import { useEffect, useState } from "react";
 import InfoTooltip from "./InfoTooltip";
-import { ANOMALIES_SNAPSHOT, SNAPSHOT_AS_OF } from "../data/anomaliesSnapshot";
 
 const API_BASE = import.meta.env.VITE_API_URL ?? `${window.location.origin}`;
 
@@ -120,14 +119,8 @@ export default function RankingBoard({
         setAsOf(json.as_of_date);
       } catch (e) {
         if (cancelled) return;
-        const pool = (ANOMALIES_SNAPSHOT[metric] ?? []) as AnomalyRow[];
-        if (pool.length > 0) {
-          setRows(applyFilter(pool));
-          setAsOf(SNAPSHOT_AS_OF);
-          setError(null);
-        } else {
-          setError(String(e));
-        }
+        setRows([]);
+        setError(String(e));
       } finally {
         if (!cancelled) setLoading(false);
       }

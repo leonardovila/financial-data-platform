@@ -14,7 +14,6 @@
 // ──────────────────────────────────────────────────────────────────────────────
 
 import { useEffect, useState, useCallback } from "react";
-import { ANOMALIES_SNAPSHOT, SNAPSHOT_AS_OF } from "../data/anomaliesSnapshot";
 
 const API_BASE =
   import.meta.env.VITE_API_URL ?? `${window.location.origin}`;
@@ -85,23 +84,8 @@ export default function AdvancedAnalytics() {
       const json = (await r.json()) as AnomalyResponse;
       setData(json);
     } catch (e) {
-      const pool = ANOMALIES_SNAPSHOT[m] ?? [];
-      if (pool.length > 0) {
-        const sorted = [...pool]
-          .sort((a, b) => Math.abs(b.z_of_z ?? 0) - Math.abs(a.z_of_z ?? 0))
-          .slice(0, 10);
-        setData({
-          metric: m,
-          as_of_date: SNAPSHOT_AS_OF,
-          min_abs_z: 1.0,
-          limit: 10,
-          rows: sorted,
-        });
-        setError(null);
-      } else {
-        setError(String(e));
-        setData(null);
-      }
+      setError(String(e));
+      setData(null);
     } finally {
       setLoading(false);
     }
