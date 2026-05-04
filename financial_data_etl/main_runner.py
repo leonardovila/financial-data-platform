@@ -10,15 +10,105 @@ from financial_data_etl.observability.run_context import RunContext
 
 import argparse
 import os
+import subprocess
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import List, Optional
 
 from financial_data_etl.storage.paths import DB_PATH
+
+# Where the dbt project lives inside the container (from the Dockerfile COPY).
+_DBT_PROJECT_DIR = Path("/app/financial_dwh")
+_GCP_SA_KEY_PATH = "/tmp/gcp-sa.json"
 
 
 def _use_vps_raw() -> bool:
     """USE_VPS_RAW=true switches step 3 from live scrape to S3 raw read."""
     return os.environ.get("USE_VPS_RAW", "false").lower() in ("1", "true", "yes")
+
+
+def _bootstrap_gcp_credentials() -> bool:
+    """
+    If GCP_SA_KEY_JSON is provided as env var (ECS Secret injection), write
+    it to a tmp file and export GOOGLE_APPLICATION_CREDENTIALS so the
+    google-cloud-bigquery client + dbt CLI both pick it up.
+
+    Returns True if BigQuery is available (creds resolved), False otherwise.
+    """
+    if os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"):
+        return True
+    sa_json = os.environ.get("GCP_SA_KEY_JSON")
+    if not sa_json:
+        return False
+    Path(_GCP_SA_KEY_PATH).write_text(sa_json, encoding="utf-8")
+    try:
+        os.chmod(_GCP_SA_KEY_PATH, 0o600)
+    except Exception:
+        pass
+    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = _GCP_SA_KEY_PATH
+    os.environ.setdefault("GCP_PROJECT", "financial-data-etl")
+    return True
+
+
+def _refresh_dwh(ctx: RunContext) -> None:
+    """
+    Push the latest RDS state into BigQuery and re-materialize the dbt models.
+    Failures here do NOT bring the whole task down — the upstream RDS write
+    already succeeded; the analytics layer just stays one cycle behind.
+    """
+    if not _bootstrap_gcp_credentials():
+        ctx.event(
+            "dwh_refresh_skipped",
+            stage="dwh_refresh",
+            reason="no GCP credentials available",
+            level="WARNING",
+        )
+        return
+
+    with ctx.span("dwh_refresh"):
+        # 1) RDS -> BigQuery bronze
+        try:
+            with ctx.span("load_to_bigquery"):
+                from etl_extract import load_to_bigquery
+                load_to_bigquery.main()
+        except Exception as e:
+            ctx.event(
+                "load_to_bigquery_error",
+                stage="dwh_refresh",
+                error=str(e),
+                level="ERROR",
+            )
+            return  # No point running dbt if bronze didn't refresh
+
+        # 2) dbt run: bronze -> staging -> intermediate -> marts
+        try:
+            with ctx.span("dbt_run"):
+                result = subprocess.run(
+                    [
+                        "dbt", "run",
+                        "--project-dir", str(_DBT_PROJECT_DIR),
+                        "--profiles-dir", str(_DBT_PROJECT_DIR),
+                        "--target", "prod",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=900,
+                )
+                ctx.event(
+                    "dbt_run_completed",
+                    stage="dwh_refresh",
+                    returncode=result.returncode,
+                    stdout_tail=result.stdout[-2000:] if result.stdout else "",
+                    stderr_tail=result.stderr[-2000:] if result.stderr else "",
+                    level="INFO" if result.returncode == 0 else "ERROR",
+                )
+        except Exception as e:
+            ctx.event(
+                "dbt_run_error",
+                stage="dwh_refresh",
+                error=str(e),
+                level="ERROR",
+            )
 
 def build_cli_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -239,6 +329,10 @@ def main(argv: Optional[List[str]] = None) -> int:
                     # Esperamos a que terminen y capturamos cualquier error si SQLite se queja
                     for f in concurrent.futures.as_completed(futures):
                         f.result()
+
+        # Refresh the analytics DWH (RDS -> BigQuery bronze, then dbt run
+        # to rebuild staging + intermediate + marts).
+        _refresh_dwh(ctx)
 
         return 0
 
