@@ -17,11 +17,13 @@
         }
       ],
       "environment": [
-        {"name": "ALLOWED_ORIGINS", "value": "https://app.leonardovila.com,https://leonardovila.com,http://localhost:3000"}
+        {"name": "ALLOWED_ORIGINS", "value": "https://app.leonardovila.com,https://leonardovila.com,http://localhost:3000"},
+        {"name": "GCP_PROJECT", "value": "financial-data-etl"}
       ],
       "secrets": [
         {"name": "DATABASE_URL", "valueFrom": "arn:aws:secretsmanager:us-east-2:295933007543:secret:financial-data/rds-vqG2ip"},
-        {"name": "INTERNAL_API_TOKEN", "valueFrom": "arn:aws:secretsmanager:us-east-2:295933007543:secret:financial-data/internal-api-token-4QMQ9b"}
+        {"name": "INTERNAL_API_TOKEN", "valueFrom": "arn:aws:secretsmanager:us-east-2:295933007543:secret:financial-data/internal-api-token-4QMQ9b"},
+        {"name": "GCP_SA_KEY_JSON", "valueFrom": "arn:aws:secretsmanager:us-east-2:295933007543:secret:financial-data/bigquery-sa-5cUNxf"}
       ],
       "logConfiguration": {
         "logDriver": "awslogs",
