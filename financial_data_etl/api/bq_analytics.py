@@ -44,8 +44,21 @@ _client: Any = None
 def _get_client():
     global _client
     if _client is None:
+        import json
         from google.cloud import bigquery
-        _client = bigquery.Client(project=GCP_PROJECT)
+        from google.oauth2 import service_account
+
+        # Prefer in-memory credentials from env var (Secrets Manager injection
+        # in ECS). Falls back to GOOGLE_APPLICATION_CREDENTIALS file path or
+        # ADC if neither is present (local dev).
+        sa_json_raw = os.environ.get("GCP_SA_KEY_JSON")
+        if sa_json_raw:
+            credentials = service_account.Credentials.from_service_account_info(
+                json.loads(sa_json_raw)
+            )
+            _client = bigquery.Client(project=GCP_PROJECT, credentials=credentials)
+        else:
+            _client = bigquery.Client(project=GCP_PROJECT)
         logger.info("BigQuery client initialized for analytics (project=%s)", GCP_PROJECT)
     return _client
 
