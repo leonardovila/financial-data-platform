@@ -14,6 +14,7 @@ __pycache__/
 *apunte_sistema.md
 *bronze_showcase.py
 *example.sql
+*TODO.md
 
 # Build / packaging artifacts
 financial_data_etl.egg-info/
