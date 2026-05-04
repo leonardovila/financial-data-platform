@@ -100,32 +100,51 @@ EXTRACTS = {
 
 # ─── Helpers ───────────────────────────────────────────────────────────────────
 
-def read_table(engine, table_name: str, query: str) -> pd.DataFrame:
-    log.info(f"Reading {table_name} from RDS...")
-    with engine.connect() as conn:
-        df = pd.read_sql(text(query), conn)
-    log.info(f"  → {len(df):,} rows, {len(df.columns)} columns")
-    return df
+CHUNK_SIZE = 200_000  # rows per pandas chunk; keeps peak RAM ~150 MB.
 
 
-def load_to_bq(client: bigquery.Client, df: pd.DataFrame, table_name: str):
+def stream_table_to_bq(engine, client: bigquery.Client, table_name: str, query: str) -> int:
     """
-    Carga el DataFrame a BigQuery con WRITE_TRUNCATE (reemplaza la tabla entera).
-    Para cargas incrementales futuras se cambia a WRITE_APPEND.
+    Stream a RDS table into BigQuery in chunks. The first chunk uses
+    WRITE_TRUNCATE (replaces the table); subsequent chunks WRITE_APPEND.
+    Memory stays bounded by CHUNK_SIZE rather than scaling with row count.
+
+    Returns the total row count uploaded.
     """
     table_id = f"{GCP_PROJECT}.{BQ_DATASET}.{table_name}"
+    total_rows = 0
+    chunk_idx = 0
 
-    job_config = bigquery.LoadJobConfig(
-        write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE,
-        autodetect=True,   # infiere schema desde el DataFrame
-    )
+    log.info(f"Streaming {table_name} from RDS -> {table_id} (chunksize={CHUNK_SIZE:,})")
+    # stream_results=True habilita server-side cursor en psycopg2 — sin esto,
+    # pd.read_sql(chunksize=...) trae TODAS las filas al cliente antes de
+    # chunkear localmente, lo que voltea el container por OOM en tablas
+    # grandes. Con stream_results=True el cursor queda abierto en el server
+    # y se traen ~CHUNK_SIZE filas por iteración.
+    with engine.connect().execution_options(stream_results=True) as conn:
+        for chunk_df in pd.read_sql(text(query), conn, chunksize=CHUNK_SIZE):
+            disposition = (
+                bigquery.WriteDisposition.WRITE_TRUNCATE
+                if chunk_idx == 0
+                else bigquery.WriteDisposition.WRITE_APPEND
+            )
+            job_config = bigquery.LoadJobConfig(
+                write_disposition=disposition,
+                autodetect=True,
+            )
+            job = client.load_table_from_dataframe(chunk_df, table_id, job_config=job_config)
+            job.result()
+            total_rows += len(chunk_df)
+            chunk_idx += 1
+            log.info(f"  chunk {chunk_idx}: +{len(chunk_df):,} rows (total {total_rows:,})")
 
-    log.info(f"Loading to {table_id}...")
-    job = client.load_table_from_dataframe(df, table_id, job_config=job_config)
-    job.result()  # espera a que termine
+    if chunk_idx == 0:
+        log.warning(f"  {table_name}: no rows returned from RDS — table left as-is")
+        return 0
 
     table = client.get_table(table_id)
     log.info(f"  → {table.num_rows:,} rows in BigQuery ({table_id})")
+    return total_rows
 
 
 # ─── Main ──────────────────────────────────────────────────────────────────────
@@ -140,15 +159,8 @@ def main():
     results = {}
     for table_name, query in EXTRACTS.items():
         try:
-            df = read_table(engine, table_name, query)
-            if df.empty:
-                log.warning(f"  {table_name}: EMPTY — skipping")
-                results[table_name] = "empty"
-                continue
-
-            load_to_bq(bq, df, table_name)
-            results[table_name] = f"ok ({len(df):,} rows)"
-
+            n = stream_table_to_bq(engine, bq, table_name, query)
+            results[table_name] = f"ok ({n:,} rows)" if n else "empty"
         except Exception as e:
             log.error(f"  {table_name}: FAILED — {e}")
             results[table_name] = f"error: {e}"
