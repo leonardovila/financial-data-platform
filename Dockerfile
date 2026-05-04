@@ -38,6 +38,8 @@ WORKDIR /app
 
 COPY --from=builder /install /usr/local
 COPY financial_data_etl/ ./financial_data_etl/
+COPY etl_extract/ ./etl_extract/
+COPY financial_dwh/ ./financial_dwh/
 
 RUN mkdir -p logs ws_traces && \
     chown -R app:app /app
