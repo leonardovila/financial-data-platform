@@ -80,7 +80,43 @@ def _refresh_dwh(ctx: RunContext) -> None:
             )
             return  # No point running dbt if bronze didn't refresh
 
-        # 2) dbt run: bronze -> staging -> intermediate -> marts
+        # 2) dbt deps: install packages declared in packages.yml (e.g. dbt_utils)
+        # into the local dbt_packages/ folder. Required before every `dbt run`
+        # because the runtime container does NOT bake dbt_packages/ into the
+        # image — without this, dbt run aborts with "Compilation Error: dbt
+        # found 1 package(s) specified ... but only 0 package(s) installed".
+        try:
+            with ctx.span("dbt_deps"):
+                deps_result = subprocess.run(
+                    [
+                        "dbt", "deps",
+                        "--project-dir", str(_DBT_PROJECT_DIR),
+                        "--profiles-dir", str(_DBT_PROJECT_DIR),
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=180,
+                )
+                ctx.event(
+                    "dbt_deps_completed",
+                    stage="dwh_refresh",
+                    returncode=deps_result.returncode,
+                    stdout_tail=deps_result.stdout[-1000:] if deps_result.stdout else "",
+                    stderr_tail=deps_result.stderr[-1000:] if deps_result.stderr else "",
+                    level="INFO" if deps_result.returncode == 0 else "ERROR",
+                )
+                if deps_result.returncode != 0:
+                    return  # No point running dbt if deps failed
+        except Exception as e:
+            ctx.event(
+                "dbt_deps_error",
+                stage="dwh_refresh",
+                error=str(e),
+                level="ERROR",
+            )
+            return
+
+        # 3) dbt run: bronze -> staging -> intermediate -> marts
         try:
             with ctx.span("dbt_run"):
                 result = subprocess.run(
