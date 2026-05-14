@@ -10,6 +10,7 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { useWsStore } from "../stores/wsStore";
 import { formatCurrency } from "../lib/formatters";
+import { useI18n } from "../i18n";
 
 const API_BASE =
   import.meta.env.VITE_API_URL ?? `${window.location.origin}`;
@@ -20,6 +21,7 @@ interface SymbolEntry {
 }
 
 export default function SymbolSearch() {
+  const { t } = useI18n();
   const currentSymbol = useWsStore((s) => s.currentSymbol);
   const companyName = useWsStore((s) => s.companyName);
   const pendingSymbolDisplay = useWsStore((s) => s.pendingSymbolDisplay);
@@ -154,7 +156,7 @@ export default function SymbolSearch() {
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               onKeyDown={handleKeyDown}
-              placeholder="Search ticker or company..."
+              placeholder={t("search.placeholder")}
               className={[
                 "flex-1 bg-transparent outline-none font-mono",
                 "text-[var(--color-text)] placeholder:text-[var(--color-muted)]",
@@ -187,7 +189,7 @@ export default function SymbolSearch() {
                 <span className="truncate text-xs text-[var(--color-yellow)] animate-pulse">
                   {displayPending.includes("—")
                     ? displayPending.split("—").slice(1).join("—").trim()
-                    : "Loading..."}
+                    : t("search.loading")}
                 </span>
               )}
               {displayCompany && (
@@ -246,7 +248,7 @@ export default function SymbolSearch() {
             ))
           ) : (
             <div className="flex items-center px-3 h-9 text-xs text-[var(--color-muted)] font-mono">
-              No match
+              {t("search.noMatch")}
             </div>
           )}
         </div>

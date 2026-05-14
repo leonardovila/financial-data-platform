@@ -11,6 +11,8 @@
 
 import RankingBoard from "../components/RankingBoard";
 import AdvancedAnalytics from "../components/AdvancedAnalytics";
+import LangToggle from "../components/LangToggle";
+import { useI18n } from "../i18n";
 
 const fmtPct = (v: number | null) =>
   v == null || !isFinite(v) ? "—" : (v >= 0 ? "+" : "") + (v * 100).toFixed(2) + "%";
@@ -24,6 +26,7 @@ const fmtDist = (v: number | null) =>
   v == null || !isFinite(v) ? "—" : (v * 100).toFixed(1) + "%";
 
 export default function AdvancedAnalyticsPage() {
+  const { t } = useI18n();
   return (
     <div className="min-h-dvh w-full bg-[var(--color-bg)] flex flex-col">
       {/* ── Header bar ── */}
@@ -44,62 +47,64 @@ export default function AdvancedAnalyticsPage() {
           ].join(" ")}
         >
           <span aria-hidden="true">&larr;</span>
-          <span>volver al dashboard</span>
+          <span>{t("nav.backToDashboard")}</span>
         </a>
-        <span className="font-mono text-[10px] uppercase tracking-widest text-[var(--color-muted)]">
-          /financial/avanzadas · gold · bigquery
-        </span>
+        <div className="flex items-center gap-3">
+          <span className="font-mono text-[10px] uppercase tracking-widest text-[var(--color-muted)] hidden sm:inline">
+            {t("nav.breadcrumb")}
+          </span>
+          <LangToggle />
+        </div>
       </div>
 
       {/* ── HERO ── */}
       <div className="px-4 lg:px-6 pt-5 pb-4 border-b border-[var(--color-border)]">
         <div className="flex items-baseline gap-3 flex-wrap">
           <h1 className="text-2xl sm:text-3xl lg:text-4xl font-mono font-black uppercase tracking-tight text-[var(--color-neon)] leading-none">
-            Analiticas Avanzadas
+            {t("hero.title")}
           </h1>
           <span className="text-[10px] sm:text-[11px] uppercase tracking-widest text-[var(--color-muted)] font-mono">
-            outlier detection · z-of-z layer · cross-asset
+            {t("hero.tagline")}
           </span>
         </div>
         <p className="mt-3 text-[12px] sm:text-[13px] text-[var(--color-text)] max-w-3xl leading-relaxed">
-          Rankings del dia segun la <strong className="text-[var(--color-neon)]">capa z_of_z</strong>:
-          la rareza de la rareza. No mostramos el simbolo mas sobrecomprado en RSI —
-          mostramos al simbolo cuya sobrecompra es{" "}
-          <em className="text-[var(--color-yellow)] not-italic font-semibold">anormalmente extrema</em>{" "}
-          incluso para un dia que YA esta lleno de sobrecompra.
+          {t("hero.desc")} <strong className="text-[var(--color-neon)]">{t("hero.descLayer")}</strong>
+          {t("hero.descMiddle")}{" "}
+          <em className="text-[var(--color-yellow)] not-italic font-semibold">{t("hero.descEmphasis")}</em>{" "}
+          {t("hero.descEnd")}
         </p>
 
         {/* ── Mini-glosario de las tres capas (legibilidad para el visitante nuevo) ── */}
         <div className="mt-4 grid grid-cols-1 sm:grid-cols-3 gap-2 max-w-3xl">
           <div className="border border-[var(--color-border)] px-3 py-2 bg-[var(--color-panel)]">
             <div className="text-[10px] uppercase tracking-widest font-bold text-[var(--color-yellow)]">
-              z_intra
+              {t("z.intra")}
             </div>
             <p className="text-[11px] text-[var(--color-muted)] mt-0.5 leading-snug">
-              Que tan raro esta el simbolo vs su <strong className="text-[var(--color-text)]">propia historia</strong> (252d).
+              {t("z.intraDesc")} <strong className="text-[var(--color-text)]">{t("z.intraEmphasis")}</strong> {t("z.intraWindow")}
             </p>
           </div>
           <div className="border border-[var(--color-border)] px-3 py-2 bg-[var(--color-panel)]">
             <div className="text-[10px] uppercase tracking-widest font-bold text-[var(--color-yellow)]">
-              z_cross
+              {t("z.cross")}
             </div>
             <p className="text-[11px] text-[var(--color-muted)] mt-0.5 leading-snug">
-              Que tan raro esta vs el <strong className="text-[var(--color-text)]">resto del universo HOY</strong>.
+              {t("z.crossDesc")} <strong className="text-[var(--color-text)]">{t("z.crossEmphasis")}</strong>{t("z.crossEnd")}
             </p>
           </div>
           <div className="border border-[var(--color-neon)]/40 px-3 py-2 bg-[var(--color-neon)]/5">
             <div className="text-[10px] uppercase tracking-widest font-bold text-[var(--color-neon)]">
-              z_of_z ★
+              {t("z.ofz")}
             </div>
             <p className="text-[11px] text-[var(--color-muted)] mt-0.5 leading-snug">
-              La <strong className="text-[var(--color-text)]">rareza de la rareza</strong>: anomalia dentro de anomalia.
+              {t("z.ofzDesc")} <strong className="text-[var(--color-text)]">{t("z.ofzEmphasis")}</strong>{t("z.ofzEnd")}
             </p>
           </div>
         </div>
 
         <p className="mt-3 text-[10px] sm:text-[11px] text-[var(--color-muted)] font-mono">
-          source: <code className="text-[var(--color-blue)]">financial_marts.fact_derived_metrics</code>
-          {" "}· refrescado 1×/dia · clic en el <span className="text-[var(--color-yellow)]">?</span> de cada card para mas detalle
+          {t("hero.source")} <code className="text-[var(--color-blue)]">financial_marts.fact_derived_metrics</code>
+          {" "}{t("hero.refreshNote")} <span className="text-[var(--color-yellow)]">?</span> {t("hero.refreshEnd")}
         </p>
       </div>
 
@@ -107,9 +112,9 @@ export default function AdvancedAnalyticsPage() {
       <div className="px-4 lg:px-6 py-4 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
 
         <RankingBoard
-          title="MAS SOBRECOMPRADOS"
-          subtitle="RSI 14 — anomalia positiva extrema"
-          help="Simbolos cuyo RSI de hoy es anormalmente alto en TRES capas: vs su propia historia (z_intra), vs el resto del universo HOY (z_cross), y la rareza de esa rareza (z_of_z). RSI > 70 ya es 'sobrecomprado' clasico — aca rankeamos quien esta MAS sobrecomprado de lo esperable."
+          title={t("rank.overbought.title")}
+          subtitle={t("rank.overbought.sub")}
+          help={t("rank.overbought.help")}
           metric="rsi_14"
           filter="pos"
           accent="neon"
@@ -118,9 +123,9 @@ export default function AdvancedAnalyticsPage() {
         />
 
         <RankingBoard
-          title="MAS SOBREVENDIDOS"
-          subtitle="RSI 14 — anomalia negativa extrema"
-          help="Lo opuesto: RSI bajo Y anormalmente bajo. Tipicamente RSI < 30 = sobrevendido. Aca rankeamos por |z_of_z|: candidatos a rebote tecnico segun el detector."
+          title={t("rank.oversold.title")}
+          subtitle={t("rank.oversold.sub")}
+          help={t("rank.oversold.help")}
           metric="rsi_14"
           filter="neg"
           accent="red"
@@ -129,9 +134,9 @@ export default function AdvancedAnalyticsPage() {
         />
 
         <RankingBoard
-          title="VOLATILIDAD ANOMALA"
-          subtitle="Vol 1M — z_of_z absoluto"
-          help="Volatilidad anualizada del ultimo mes (21 dias habiles). Rankeamos por |z_of_z|: simbolos cuya vol esta lejos de la suya historica Y de la del universo. Util para detectar regime shifts."
+          title={t("rank.vol1m.title")}
+          subtitle={t("rank.vol1m.sub")}
+          help={t("rank.vol1m.help")}
           metric="vol_1m"
           filter="abs"
           accent="yellow"
@@ -140,9 +145,9 @@ export default function AdvancedAnalyticsPage() {
         />
 
         <RankingBoard
-          title="RALLY DEL MES"
-          subtitle="Retorno 1M — anomalia positiva"
-          help="Retorno de los ultimos 21 dias habiles, con z_of_z positivo extremo. No es solo el que mas subio: es el que mas subio comparado con su perfil tipico Y comparado con como se comporto el universo este mes."
+          title={t("rank.rally.title")}
+          subtitle={t("rank.rally.sub")}
+          help={t("rank.rally.help")}
           metric="ret_1m"
           filter="pos"
           accent="neon"
@@ -151,9 +156,9 @@ export default function AdvancedAnalyticsPage() {
         />
 
         <RankingBoard
-          title="CAIDA DEL MES"
-          subtitle="Retorno 1M — anomalia negativa"
-          help="Espejo del rally: caidas anormalmente fuertes en 1 mes. Si el universo entero bajo, una caida del 5% es normal; aca aparecen las que se desviaron del comportamiento general."
+          title={t("rank.drop.title")}
+          subtitle={t("rank.drop.sub")}
+          help={t("rank.drop.help")}
           metric="ret_1m"
           filter="neg"
           accent="red"
@@ -162,9 +167,9 @@ export default function AdvancedAnalyticsPage() {
         />
 
         <RankingBoard
-          title="GAP vs SMA 200"
-          subtitle="Distancia anomala al promedio 200d"
-          help="(precio − SMA200) / SMA200. Indicador clasico de tendencia largoplacista (>0 = bull, <0 = bear). Rankeamos por |z_of_z|: quien esta MAS lejos de su promedio largo de lo que su historia justifica."
+          title={t("rank.sma200.title")}
+          subtitle={t("rank.sma200.sub")}
+          help={t("rank.sma200.help")}
           metric="sma_200_gap"
           filter="abs"
           accent="blue"
@@ -173,9 +178,9 @@ export default function AdvancedAnalyticsPage() {
         />
 
         <RankingBoard
-          title="CERCA DEL MAXIMO 1Y"
-          subtitle="Distancia al techo de 52 semanas"
-          help="(precio − max_52w) / max_52w. 0% = nuevo maximo de 52 semanas. Rankeamos por |z_of_z|: quien esta tocando techo (o piso) de manera estadisticamente rara."
+          title={t("rank.highDist.title")}
+          subtitle={t("rank.highDist.sub")}
+          help={t("rank.highDist.help")}
           metric="high_dist_1y"
           filter="abs"
           accent="neon"
@@ -184,9 +189,9 @@ export default function AdvancedAnalyticsPage() {
         />
 
         <RankingBoard
-          title="RANGO INTRADIA RARO"
-          subtitle="(high − low) / close — sesion atipica"
-          help="Amplitud de la sesion del dia normalizada al precio. Sesion ancha = mucha pelea entre buy/sell. z_of_z extremo = ese simbolo tuvo un dia mas (o menos) volatil de lo que cualquiera esperaria."
+          title={t("rank.range.title")}
+          subtitle={t("rank.range.sub")}
+          help={t("rank.range.help")}
           metric="range_intraday"
           filter="abs"
           accent="yellow"
@@ -195,9 +200,9 @@ export default function AdvancedAnalyticsPage() {
         />
 
         <RankingBoard
-          title="VOLATILIDAD 3M"
-          subtitle="Regimen de volatilidad anomalo"
-          help="Volatilidad anualizada de 63 dias. Captura cambios de regimen mas estables que la de 1M. z_of_z extremo = ese simbolo entro/salio de un regimen de vol distinto al del resto."
+          title={t("rank.vol3m.title")}
+          subtitle={t("rank.vol3m.sub")}
+          help={t("rank.vol3m.help")}
           metric="vol_3m"
           filter="abs"
           accent="blue"
@@ -210,11 +215,11 @@ export default function AdvancedAnalyticsPage() {
       <div className="px-4 lg:px-6 pt-4">
         <div className="border-t border-[var(--color-border)] pt-4 pb-2">
           <h2 className="text-sm font-mono uppercase tracking-widest font-bold text-[var(--color-text)]">
-            tabla cruda · multi-metrica
+            {t("table.title")}
           </h2>
           <p className="text-[11px] text-[var(--color-muted)] mt-1">
-            La misma data servida desde el endpoint <code>/analytics/anomalies</code>,
-            con selector libre de metrica y las tres capas de z-score (intra / cross / of_z).
+            {t("table.desc")} <code>/analytics/anomalies</code>
+            {t("table.descEnd")}
           </p>
         </div>
       </div>
@@ -229,7 +234,7 @@ export default function AdvancedAnalyticsPage() {
         className="shrink-0 mt-auto px-4 py-2 text-[10px] uppercase tracking-wider text-[var(--color-muted)] border-t border-[var(--color-border)] font-mono"
         style={{ paddingBottom: "env(safe-area-inset-bottom)" }}
       >
-        gold layer · bigquery · financial_marts.fact_derived_metrics · refrescado 1×/dia
+        {t("table.footer")}
       </div>
     </div>
   );

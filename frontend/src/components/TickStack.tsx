@@ -14,7 +14,7 @@ import { useWsStore } from "../stores/wsStore";
 import { formatCurrency, formatTimestamp, signClass } from "../lib/formatters";
 import type { TickPayload } from "../types/ws";
 import InfoTooltip from "./InfoTooltip";
-import { LIVE_FEED_GLOSSARY } from "../lib/glossary";
+import { useI18n } from "../i18n";
 
 // ── Single tick row (memoized — only new rows render) ──
 
@@ -63,6 +63,7 @@ const TickRow = memo(function TickRow({ tick, prevClose, isFirst }: TickRowProps
 // ── Tick list renderer (shared between desktop sidebar and mobile sheet) ──
 
 function TickList({ maxRows = 16 }: { maxRows?: number } = {}) {
+  const { t } = useI18n();
   const tickHistory = useWsStore((s) => s.tickHistory);
 
   // Hachazo directo. Nada de scroll, nada de renderizar 50 filas invisibles.
@@ -76,21 +77,21 @@ function TickList({ maxRows = 16 }: { maxRows?: number } = {}) {
 
         {/* 2. Título (Neutro pero firme) */}
         <span className="text-[12px] font-semibold text-[var(--color-text)] tracking-wide mb-1 uppercase">
-          Awaiting Market Data
+          {t("feed.awaitingTitle")}
         </span>
 
         {/* 3. Explicación (Muted, no compite) */}
         <span className="text-[11px] text-[var(--color-muted)] leading-relaxed max-w-[85%] mb-4">
-          If there's no activity after a few seconds, the traditional market is currently closed.
+          {t("feed.awaitingDesc")}
         </span>
 
         {/* 4. El "Call to Action" prolijo (Destacando solo el ticker) */}
         <div className="bg-[rgba(255,255,255,0.02)] border border-[var(--color-border)] rounded px-3 py-2 flex flex-col items-center gap-1 shadow-sm">
           <span className="text-[10px] text-[var(--color-muted)] uppercase tracking-wider">
-            Test the 24/7 Engine
+            {t("feed.testEngine")}
           </span>
           <span className="text-[11px] text-[var(--color-text)]">
-            Search <kbd className="font-mono text-[#38bdf8] font-bold px-1.5 py-0.5 bg-[rgba(56,189,248,0.1)] rounded">BTC</kbd> for live crypto flow
+            Search <kbd className="font-mono text-[#38bdf8] font-bold px-1.5 py-0.5 bg-[rgba(56,189,248,0.1)] rounded">BTC</kbd> {t("feed.searchBtc")}
           </span>
         </div>
       </div>
@@ -119,26 +120,28 @@ function TickList({ maxRows = 16 }: { maxRows?: number } = {}) {
 // ── Column headers ──
 
 function TickHeader() {
+  const { t } = useI18n();
   return (
     <div className="flex items-center gap-4 px-2 h-7 text-[10px] uppercase tracking-widest text-[var(--color-muted)] border-b border-[var(--color-border)]">
-      <span className="shrink-0 w-[68px]">Time</span>
-      <span className="shrink-0">Price</span>
-      <span className="shrink-0 w-16 text-right">Delta</span>
+      <span className="shrink-0 w-[68px]">{t("feed.time")}</span>
+      <span className="shrink-0">{t("feed.price")}</span>
+      <span className="shrink-0 w-16 text-right">{t("feed.delta")}</span>
     </div>
   );
 }
 
 // ── Desktop sidebar (sm+ — always visible, rendered by Dashboard grid) ──
 export function TickStackSidebar() {
+  const { t } = useI18n();
   return (
     <div className="flex flex-col h-full bg-[var(--color-bg)] border-l border-[var(--color-border)]">
       {/* Header agresivo en neón con pulso para gritar LIVE en desktop */}
       <div className="px-2 py-1 text-[10px] text-[var(--color-neon)] font-bold uppercase tracking-widest border-b border-[var(--color-border)] flex items-center gap-2 bg-[var(--color-panel)]">
         <span className="inline-block w-1.5 h-1.5 rounded-full bg-[var(--color-neon)] pulse" />
-        <span>LIVE PRICE FEED</span>
+        <span>{t("feed.title")}</span>
         {/* Forzamos normal-case y limpiamos el espaciado y la negrita heredada */}
         <div className="ml-auto normal-case tracking-normal font-normal text-left text-[var(--color-text)]">
-          <InfoTooltip text={LIVE_FEED_GLOSSARY.description} size="sm" />
+          <InfoTooltip text={t("glossary.feed")} size="sm" />
         </div>
       </div>
       <TickHeader />
@@ -160,8 +163,9 @@ export function TickStackSidebar() {
 // Ocupa espacio real en el DOM, robándole altura al Chart.
 
 export function TickStackMobile() {
+  const { t } = useI18n();
   const tickHistory = useWsStore((s) => s.tickHistory);
-  
+
   // Cortamos a 4 ticks máximo. Densidad total.
   const displayTicks = tickHistory.slice(0, 4);
 
@@ -170,9 +174,9 @@ export function TickStackMobile() {
       {/* ── Mobile Header (El cartel de neón que había desaparecido) ── */}
       <div className="px-2 py-1 text-[10px] text-[var(--color-neon)] font-bold uppercase tracking-widest border-b border-[var(--color-border)] flex items-center gap-2 bg-[var(--color-panel)]">
         <span className="inline-block w-1.5 h-1.5 rounded-full bg-[var(--color-neon)] pulse" />
-        <span>LIVE PRICE FEED</span>
+        <span>{t("feed.title")}</span>
         <div className="ml-auto normal-case tracking-normal font-normal text-left text-[var(--color-text)]">
-          <InfoTooltip text={LIVE_FEED_GLOSSARY.description} size="sm" />
+          <InfoTooltip text={t("glossary.feed")} size="sm" />
         </div>
       </div>
       
@@ -186,11 +190,11 @@ export function TickStackMobile() {
             <div className="flex items-center gap-1.5 mb-1">
               <div className="w-1.5 h-1.5 rounded-full bg-slate-500 animate-pulse" />
               <span className="text-[10px] font-semibold text-[var(--color-text)] tracking-wide uppercase">
-                Awaiting Market Data
+                {t("feed.awaitingTitle")}
               </span>
             </div>
             <span className="text-[10px] text-[var(--color-muted)] leading-tight">
-              Market closed. Search <kbd className="font-mono text-[#38bdf8] font-bold px-1 py-0.5 bg-[rgba(56,189,248,0.1)] rounded">BTC</kbd> for 24/7 flow.
+              {t("feed.marketClosed")} <kbd className="font-mono text-[#38bdf8] font-bold px-1 py-0.5 bg-[rgba(56,189,248,0.1)] rounded">BTC</kbd> {t("feed.for247")}
             </span>
           </div>
         ) : (

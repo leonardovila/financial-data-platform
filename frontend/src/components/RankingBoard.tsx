@@ -15,6 +15,7 @@
 
 import { useEffect, useState } from "react";
 import InfoTooltip from "./InfoTooltip";
+import { useI18n } from "../i18n";
 
 const API_BASE = import.meta.env.VITE_API_URL ?? `${window.location.origin}`;
 
@@ -84,6 +85,7 @@ export default function RankingBoard({
   formatMetric = (v) => fmtNum(v, 2),
   metricShort,
 }: RankingBoardProps) {
+  const { t } = useI18n();
   const [rows, setRows] = useState<AnomalyRow[]>([]);
   const [asOf, setAsOf] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -152,7 +154,7 @@ export default function RankingBoard({
       <div className="flex-1 flex flex-col">
         {loading && (
           <div className="px-4 py-6 text-center text-[10px] uppercase text-[var(--color-muted)]">
-            cargando…
+            {t("ranking.loading")}
           </div>
         )}
         {error && (
@@ -162,7 +164,7 @@ export default function RankingBoard({
         )}
         {!loading && !error && rows.length === 0 && (
           <div className="px-4 py-6 text-center text-[10px] uppercase text-[var(--color-muted)]">
-            sin resultados
+            {t("ranking.noResults")}
           </div>
         )}
         {!loading && !error && rows.map((row, idx) => {

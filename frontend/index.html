@@ -7,6 +7,10 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <!-- FOUC prevention: set lang before React mounts -->
+    <script>
+      (function(){try{var l=localStorage.getItem('lang');if(l==='es'||l==='en'){document.documentElement.lang=l}else{document.documentElement.lang='en'}}catch(e){document.documentElement.lang='en'}})();
+    </script>
     <title>Data Financiera EN VIVO — Leonardo Vila</title>
     <meta name="description" content="Plataforma de data financiera end-to-end con data en tiempo real, montada en AWS." />
 

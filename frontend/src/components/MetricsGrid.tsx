@@ -10,44 +10,41 @@ import { useRef, useState, useEffect } from "react";
 import { useWsStore } from "../stores/wsStore";
 import MetricCard from "./MetricCard";
 import { formatPercent, formatNumber } from "../lib/formatters";
-import {
-  PERFORMANCE_GLOSSARY,
-  VOLATILITY_GLOSSARY,
-  MOMENTUM_GLOSSARY,
-} from "../lib/glossary";
-
-const TABS = ["PERFORMANCE", "VOLATILITY", "MOMENTUM"] as const;
+import { useI18n } from "../i18n";
 
 export default function MetricsGrid() {
+  const { t } = useI18n();
   const metrics = useWsStore((s) => s.metrics);
+
+  const TABS = [t("metrics.performance"), t("metrics.volatility"), t("metrics.momentum")] as const;
 
   // ── Build row configs from live metrics ──
 
   const perfRows = [
-    { label: "Price Change 1D", value: metrics.performance?.ret_1d, format: formatPercent, help: PERFORMANCE_GLOSSARY.ret_1d },
-    { label: "Price Change 1W", value: metrics.performance?.ret_1w, format: formatPercent, help: PERFORMANCE_GLOSSARY.ret_1w },
-    { label: "Price Change 1M", value: metrics.performance?.ret_1m, format: formatPercent, help: PERFORMANCE_GLOSSARY.ret_1m },
-    { label: "Price Change 3M", value: metrics.performance?.ret_3m, format: formatPercent, help: PERFORMANCE_GLOSSARY.ret_3m },
-    { label: "Price Change 6M", value: metrics.performance?.ret_6m, format: formatPercent, help: PERFORMANCE_GLOSSARY.ret_6m },
-    { label: "Price Change 1Y", value: metrics.performance?.ret_1y, format: formatPercent, help: PERFORMANCE_GLOSSARY.ret_1y },
+    { label: t("perf.1d"), value: metrics.performance?.ret_1d, format: formatPercent, help: t("glossary.perf.ret_1d") },
+    { label: t("perf.1w"), value: metrics.performance?.ret_1w, format: formatPercent, help: t("glossary.perf.ret_1w") },
+    { label: t("perf.1m"), value: metrics.performance?.ret_1m, format: formatPercent, help: t("glossary.perf.ret_1m") },
+    { label: t("perf.3m"), value: metrics.performance?.ret_3m, format: formatPercent, help: t("glossary.perf.ret_3m") },
+    { label: t("perf.6m"), value: metrics.performance?.ret_6m, format: formatPercent, help: t("glossary.perf.ret_6m") },
+    { label: t("perf.1y"), value: metrics.performance?.ret_1y, format: formatPercent, help: t("glossary.perf.ret_1y") },
   ];
 
   const volRows = [
-    { label: "Range", value: metrics.volatility?.range_intraday, format: formatPercent, colored: false, help: VOLATILITY_GLOSSARY.range_intraday },
-    { label: "Volatility 1W", value: metrics.volatility?.vol_1w, format: formatPercent, colored: false, help: VOLATILITY_GLOSSARY.vol_1w },
-    { label: "Volatility 1M", value: metrics.volatility?.vol_1m, format: formatPercent, colored: false, help: VOLATILITY_GLOSSARY.vol_1m },
-    { label: "Volatility 3M", value: metrics.volatility?.vol_3m, format: formatPercent, colored: false, help: VOLATILITY_GLOSSARY.vol_3m },
-    { label: "Volatility 6M", value: metrics.volatility?.vol_6m, format: formatPercent, colored: false, help: VOLATILITY_GLOSSARY.vol_6m },
-    { label: "Volatility 1Y", value: metrics.volatility?.vol_1y, format: formatPercent, colored: false, help: VOLATILITY_GLOSSARY.vol_1y },
+    { label: t("vol.range"), value: metrics.volatility?.range_intraday, format: formatPercent, colored: false, help: t("glossary.vol.range") },
+    { label: t("vol.1w"), value: metrics.volatility?.vol_1w, format: formatPercent, colored: false, help: t("glossary.vol.1w") },
+    { label: t("vol.1m"), value: metrics.volatility?.vol_1m, format: formatPercent, colored: false, help: t("glossary.vol.1m") },
+    { label: t("vol.3m"), value: metrics.volatility?.vol_3m, format: formatPercent, colored: false, help: t("glossary.vol.3m") },
+    { label: t("vol.6m"), value: metrics.volatility?.vol_6m, format: formatPercent, colored: false, help: t("glossary.vol.6m") },
+    { label: t("vol.1y"), value: metrics.volatility?.vol_1y, format: formatPercent, colored: false, help: t("glossary.vol.1y") },
   ];
 
   const momentumRows = [
-    { label: "RSI 14", value: metrics.momentum?.rsi_14, format: formatNumber, colored: false, help: MOMENTUM_GLOSSARY.rsi_14 },
-    { label: "SMA 20 Gap", value: metrics.momentum?.sma_20_gap, format: formatPercent, help: MOMENTUM_GLOSSARY.sma_20_gap },
-    { label: "SMA 50 Gap", value: metrics.momentum?.sma_50_gap, format: formatPercent, help: MOMENTUM_GLOSSARY.sma_50_gap },
-    { label: "SMA 200 Gap", value: metrics.momentum?.sma_200_gap, format: formatPercent, help: MOMENTUM_GLOSSARY.sma_200_gap },
-    { label: "Off 1M High", value: metrics.momentum?.high_dist_1m, format: formatPercent, help: MOMENTUM_GLOSSARY.high_dist_1m },
-    { label: "Off 52W High", value: metrics.momentum?.high_dist_1y, format: formatPercent, help: MOMENTUM_GLOSSARY.high_dist_1y },
+    { label: t("mom.rsi"), value: metrics.momentum?.rsi_14, format: formatNumber, colored: false, help: t("glossary.mom.rsi_14") },
+    { label: t("mom.sma20"), value: metrics.momentum?.sma_20_gap, format: formatPercent, help: t("glossary.mom.sma_20_gap") },
+    { label: t("mom.sma50"), value: metrics.momentum?.sma_50_gap, format: formatPercent, help: t("glossary.mom.sma_50_gap") },
+    { label: t("mom.sma200"), value: metrics.momentum?.sma_200_gap, format: formatPercent, help: t("glossary.mom.sma_200_gap") },
+    { label: t("mom.high1m"), value: metrics.momentum?.high_dist_1m, format: formatPercent, help: t("glossary.mom.high_dist_1m") },
+    { label: t("mom.high1y"), value: metrics.momentum?.high_dist_1y, format: formatPercent, help: t("glossary.mom.high_dist_1y") },
   ];
 
   // ── Mobile tab state (synced with scroll-snap position) ──
@@ -119,9 +116,9 @@ export default function MetricsGrid() {
         ].join(" ")}
         style={{ WebkitOverflowScrolling: "touch" }}
       >
-        <MetricCard title="Performance" rows={perfRows} categoryHelp={PERFORMANCE_GLOSSARY.category} />
-        <MetricCard title="Volatility" rows={volRows} categoryHelp={VOLATILITY_GLOSSARY.category} />
-        <MetricCard title="Momentum" rows={momentumRows} categoryHelp={MOMENTUM_GLOSSARY.category} />
+        <MetricCard title={t("metrics.performance")} rows={perfRows} categoryHelp={t("glossary.perf.category")} />
+        <MetricCard title={t("metrics.volatility")} rows={volRows} categoryHelp={t("glossary.vol.category")} />
+        <MetricCard title={t("metrics.momentum")} rows={momentumRows} categoryHelp={t("glossary.mom.category")} />
       </div>
     </div>
   );

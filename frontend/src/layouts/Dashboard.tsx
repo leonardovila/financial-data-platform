@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import { useWsStore } from "../stores/wsStore";
+import { useI18n } from "../i18n";
 
 import SymbolSearch from "../components/SymbolSearch";
 import FundamentalsBar from "../components/FundamentalsBar";
@@ -7,10 +8,12 @@ import Chart from "../components/Chart";
 import { TickStackSidebar, TickStackMobile } from "../components/TickStack";
 import MetricsGrid from "../components/MetricsGrid";
 import StatusBar from "../components/StatusBar";
+import LangToggle from "../components/LangToggle";
 
 const DEFAULT_SYMBOL = "BTC";
 
 export default function Dashboard() {
+  const { t } = useI18n();
   const connect = useWsStore((s) => s.connect);
   const disconnect = useWsStore((s) => s.disconnect);
   const seedData = useWsStore((s) => s.seedData);
@@ -23,20 +26,27 @@ export default function Dashboard() {
   return (
     <div className="h-dvh w-full overflow-hidden bg-[var(--color-bg)] flex flex-col">
       {/* ── ROW 0: Back to root (Bridge to VPS Landing) ── */}
-      <a
-        href="https://www.leonardovila.com/"
+      <div
         className={[
-          "shrink-0 flex items-center gap-1.5",
+          "shrink-0 flex items-center justify-between",
           "h-9 px-4 lg:px-3",
           "bg-[var(--color-bg)] border-b border-[var(--color-border)]",
-          "font-mono text-xs font-semibold",
-          "text-[var(--color-blue)] hover:text-[var(--color-text)]",
-          "transition-colors no-underline",
         ].join(" ")}
       >
-        <span aria-hidden="true">&larr;</span>
-        <span>leonardovila.com</span>
-      </a>
+        <a
+          href="https://www.leonardovila.com/"
+          className={[
+            "flex items-center gap-1.5",
+            "font-mono text-xs font-semibold",
+            "text-[var(--color-blue)] hover:text-[var(--color-text)]",
+            "transition-colors no-underline",
+          ].join(" ")}
+        >
+          <span aria-hidden="true">&larr;</span>
+          <span>{t("nav.backToSite")}</span>
+        </a>
+        <LangToggle />
+      </div>
 
       {/* ── ROW 0.5: BIG BUTTON al show-off de Analiticas Avanzadas ── */}
       <a
@@ -66,10 +76,10 @@ export default function Dashboard() {
             </span>
             <div className="min-w-0">
               <div className="font-mono font-black uppercase tracking-widest text-sm lg:text-base text-[var(--color-neon)]">
-                ver analiticas avanzadas
+                {t("cta.title")}
               </div>
               <div className="font-mono text-[10px] lg:text-[11px] uppercase tracking-wider text-[var(--color-muted)] truncate">
-                detector de outliers · z_intra · z_cross · z_of_z · gold layer (bigquery)
+                {t("cta.subtitle")}
               </div>
             </div>
           </div>
@@ -81,7 +91,7 @@ export default function Dashboard() {
             ].join(" ")}
             aria-hidden="true"
           >
-            entrar &rarr;
+            {t("cta.enter")} &rarr;
           </span>
         </div>
       </a>

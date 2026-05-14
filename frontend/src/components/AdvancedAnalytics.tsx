@@ -14,21 +14,16 @@
 // ──────────────────────────────────────────────────────────────────────────────
 
 import { useEffect, useState, useCallback } from "react";
+import { useI18n } from "../i18n";
+import type { TKey } from "../i18n";
 
 const API_BASE =
   import.meta.env.VITE_API_URL ?? `${window.location.origin}`;
 
-const METRICS: { id: string; label: string; help: string }[] = [
-  { id: "rsi_14",         label: "RSI 14",            help: "Indice de fuerza relativa Wilder. >70 sobrecomprado, <30 sobrevendido." },
-  { id: "vol_1m",         label: "Volatilidad 1M",    help: "Volatilidad anualizada de log-returns sobre los ultimos 21 dias habiles." },
-  { id: "vol_3m",         label: "Volatilidad 3M",    help: "Volatilidad anualizada sobre los ultimos 63 dias habiles." },
-  { id: "ret_1d",         label: "Retorno 1D",        help: "Variacion porcentual ultimo dia." },
-  { id: "ret_1m",         label: "Retorno 1M",        help: "Variacion porcentual ultimos 21 dias habiles." },
-  { id: "sma_50_gap",     label: "Gap SMA 50",        help: "(close - SMA50) / SMA50. Positivo = cotiza arriba del promedio 50d." },
-  { id: "sma_200_gap",    label: "Gap SMA 200",       help: "(close - SMA200) / SMA200. Positivo = arriba del promedio 200d (bull)." },
-  { id: "range_intraday", label: "Rango intradia",    help: "(high - low) / close. Mide la amplitud de la sesion." },
-  { id: "high_dist_1y",   label: "Dist. maximo 1Y",   help: "(close - max_1y) / max_1y. 0 = nuevo maximo de 52 semanas." },
-];
+const METRIC_IDS = [
+  "rsi_14", "vol_1m", "vol_3m", "ret_1d", "ret_1m",
+  "sma_50_gap", "sma_200_gap", "range_intraday", "high_dist_1y",
+] as const;
 
 interface AnomalyRow {
   symbol: string;
@@ -69,6 +64,13 @@ function zColor(v: number | null): string {
 }
 
 export default function AdvancedAnalytics() {
+  const { t } = useI18n();
+  const METRICS = METRIC_IDS.map((id) => ({
+    id,
+    label: t(`metric.${id}` as TKey),
+    help: t(`metricHelp.${id}` as TKey),
+  }));
+
   const [metric, setMetric] = useState("rsi_14");
   const [data, setData] = useState<AnomalyResponse | null>(null);
   const [loading, setLoading] = useState(false);
@@ -103,10 +105,10 @@ export default function AdvancedAnalytics() {
       <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 border-b border-[var(--color-border)]">
         <div className="flex items-baseline gap-3 min-w-0">
           <span className="text-sm uppercase tracking-widest font-bold text-[var(--color-neon)]">
-            Analiticas Avanzadas
+            {t("aa.title")}
           </span>
           <span className="text-[11px] uppercase tracking-wider text-[var(--color-muted)]">
-            Detector de Outliers · Gold Layer (BigQuery)
+            {t("aa.subtitle")}
           </span>
         </div>
         <div className="flex items-center gap-2">
@@ -114,7 +116,7 @@ export default function AdvancedAnalytics() {
             htmlFor="metric-select"
             className="text-[11px] uppercase tracking-wider text-[var(--color-muted)]"
           >
-            metrica
+            {t("aa.metricLabel")}
           </label>
           <select
             id="metric-select"
@@ -132,11 +134,10 @@ export default function AdvancedAnalytics() {
       {/* ── Caption ── */}
       <div className="px-4 py-2 border-b border-[var(--color-border)] bg-[var(--color-bg)]">
         <p className="text-[11px] text-[var(--color-muted)] leading-relaxed">
-          Top-10 simbolos con la <strong className="text-[var(--color-text)]">anomalia mas extrema</strong> del dia para{" "}
+          {t("aa.topN")} <strong className="text-[var(--color-text)]">{t("aa.topNBold")}</strong> {t("aa.topNEnd")}{" "}
           <span className="text-[var(--color-text)] font-semibold">{selected.label}</span>.
-          Ordenados por <code className="text-[var(--color-yellow)]">|z_of_z|</code> — z-score del z-score:
-          que tan rara es la rareza de este simbolo vs la rareza tipica del universo HOY.
-          Datos servidos desde <code>financial_marts.fact_derived_metrics</code>.
+          {" "}{t("aa.topNSort")} <code className="text-[var(--color-yellow)]">|z_of_z|</code> {t("aa.topNZDesc")}
+          {" "}{t("aa.topNSource")} <code>financial_marts.fact_derived_metrics</code>.
         </p>
         <p className="text-[10px] text-[var(--color-muted)] mt-1">{selected.help}</p>
       </div>
@@ -147,7 +148,7 @@ export default function AdvancedAnalytics() {
           {loading && (
             <span className="flex items-center gap-1.5 text-[var(--color-yellow)]">
               <span className="w-1.5 h-1.5 rounded-full bg-[var(--color-yellow)] animate-pulse" />
-              cargando
+              {t("aa.loading")}
             </span>
           )}
           {!loading && data && (
@@ -161,7 +162,7 @@ export default function AdvancedAnalytics() {
           )}
         </div>
         <span className="text-[var(--color-muted)]">
-          {data ? `${data.rows.length} resultados` : "—"}
+          {data ? `${data.rows.length} ${t("aa.results")}` : "—"}
         </span>
       </div>
 
@@ -171,9 +172,9 @@ export default function AdvancedAnalytics() {
           <thead>
             <tr className="border-b border-[var(--color-border)] text-[10px] uppercase tracking-wider text-[var(--color-muted)]">
               <th className="text-left px-3 py-2 w-10">#</th>
-              <th className="text-left px-3 py-2">Simbolo</th>
-              <th className="text-left px-3 py-2 hidden sm:table-cell">Sector</th>
-              <th className="text-left px-3 py-2 hidden lg:table-cell">Tier</th>
+              <th className="text-left px-3 py-2">{t("aa.symbol")}</th>
+              <th className="text-left px-3 py-2 hidden sm:table-cell">{t("aa.sector")}</th>
+              <th className="text-left px-3 py-2 hidden lg:table-cell">{t("aa.tier")}</th>
               <th className="text-right px-3 py-2">{selected.label}</th>
               <th className="text-right px-3 py-2" title="Z-score vs propia historia 252d">z_intra</th>
               <th className="text-right px-3 py-2 hidden md:table-cell" title="Z-score cruda vs universo HOY">z_cross</th>
@@ -218,7 +219,7 @@ export default function AdvancedAnalytics() {
             {!loading && data && data.rows.length === 0 && (
               <tr>
                 <td colSpan={8} className="px-3 py-6 text-center text-[var(--color-muted)]">
-                  Sin outliers que superen el umbral hoy.
+                  {t("aa.noOutliers")}
                 </td>
               </tr>
             )}

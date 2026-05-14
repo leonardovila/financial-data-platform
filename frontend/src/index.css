@@ -146,6 +146,48 @@ body {
   pointer-events: none;
 }
 
+/* ── Language Toggle (pill-slider) ── */
+.lang-toggle {
+  position: relative;
+  display: inline-flex;
+  border-radius: 9999px;
+  border: 1px solid var(--color-border);
+  background: var(--color-bg);
+  overflow: hidden;
+  height: 26px;
+}
+.lang-toggle__thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: calc(50% - 2px);
+  height: calc(100% - 4px);
+  border-radius: 9999px;
+  background: var(--color-neon);
+  transition: transform 200ms ease;
+  pointer-events: none;
+}
+.lang-toggle__opt {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  border: none;
+  background: none;
+  cursor: pointer;
+  color: var(--color-muted);
+  transition: color 200ms ease;
+}
+.lang-toggle__opt--active {
+  color: var(--color-bg);
+}
+
 /* ── Hide TradingView Attribution Logo ── */
 #tv-attr-logo {
   display: none !important;

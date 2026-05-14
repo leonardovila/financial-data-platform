@@ -9,7 +9,7 @@
 import { useWsStore } from "../stores/wsStore";
 import { formatLargeNumber } from "../lib/formatters";
 import InfoTooltip from "./InfoTooltip";
-import { FUNDAMENTALS_GLOSSARY } from "../lib/glossary";
+import { useI18n } from "../i18n";
 
 interface FundItem {
   label: string;
@@ -32,17 +32,18 @@ function formatDecimal(val: number | null | undefined, decimals = 2): string {
 }
 
 export default function FundamentalsBar() {
+  const { t } = useI18n();
   const fundamentals = useWsStore((s) => s.fundamentals);
 
   if (!fundamentals) return null;
 
   const items: FundItem[] = [
-    { label: "Mkt Cap", value: formatLargeNumber(fundamentals.market_cap), help: FUNDAMENTALS_GLOSSARY.market_cap },
-    { label: "P/E", value: formatDecimal(fundamentals.pe_ttm), help: FUNDAMENTALS_GLOSSARY.pe_ttm },
-    { label: "EPS", value: fundamentals.eps_ttm != null ? `$${formatDecimal(fundamentals.eps_ttm)}` : "—", help: FUNDAMENTALS_GLOSSARY.eps_ttm },
-    { label: "Shares", value: formatShares(fundamentals.shares_outstanding), help: FUNDAMENTALS_GLOSSARY.shares_outstanding },
-    { label: "Sector", value: fundamentals.sector ?? "—", help: FUNDAMENTALS_GLOSSARY.sector },
-    { label: "Industry", value: fundamentals.industry ?? "—", help: FUNDAMENTALS_GLOSSARY.industry },
+    { label: t("fund.mktCap"), value: formatLargeNumber(fundamentals.market_cap), help: t("glossary.fund.market_cap") },
+    { label: t("fund.pe"), value: formatDecimal(fundamentals.pe_ttm), help: t("glossary.fund.pe_ttm") },
+    { label: t("fund.eps"), value: fundamentals.eps_ttm != null ? `$${formatDecimal(fundamentals.eps_ttm)}` : "—", help: t("glossary.fund.eps_ttm") },
+    { label: t("fund.shares"), value: formatShares(fundamentals.shares_outstanding), help: t("glossary.fund.shares") },
+    { label: t("fund.sector"), value: fundamentals.sector ?? "—", help: t("glossary.fund.sector") },
+    { label: t("fund.industry"), value: fundamentals.industry ?? "—", help: t("glossary.fund.industry") },
   ];
 
   return (
