@@ -9,7 +9,7 @@ Two products share the same ingest layer:
 
 Dockerized. Runs on PostgreSQL (OLTP) + S3 (bronze) + BigQuery (silver/gold). Currently deployed on VPS, in active migration to AWS (ECS Fargate + RDS + Lambda-orchestrated ETL).
 
-**Live:** [leonardovila.com/financial](https://leonardovila.com/financial/)
+**Live:** https://app.leonardovila.com/financial/
 
 ---
 
